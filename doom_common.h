@@ -1,3 +1,11 @@
+#ifndef DOOM_COMMON_H
+#define DOOM_COMMON_H
+
+#include <linux/spinlock.h>
+#include <linux/mutex.h>
+#include <linux/cdev.h>
+#include <linux/wait.h>
+
 #define DEVNAME "DoomDev"
 
 #define DOOMDEV_SURFACE_MIN_WIDTH 64
@@ -6,7 +14,6 @@
 #define DOOMDEV_SURFACE_MIN_HEIGHT 1
 #define DOOMDEV_SURFACE_MAX_HEIGHT 2048
 
-#define DOOMDEV_PAGE_SIZE 1<<12
 #define DOOMDEV_PT_ALIGN 64
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
@@ -20,10 +27,10 @@ struct doom_device {
     struct device *dev;
     int minor;
 //    struct dma_pool *dma_pool;
-    spinlock_t surface_lock;
+    struct mutex surface_lock;
     spinlock_t mmio_lock;
     int fifo_ping_remaining;
-    DECLARE_WAIT_QUEUE_HEAD(pong_async_wait);
+    wait_queue_head_t pong_async_wait;
 
     void __iomem *bar0;
 };
@@ -33,7 +40,7 @@ struct doom_context {
 };
 
 struct doom_frame {
-    doom_context *context;
+    struct doom_context *context;
 
     uint16_t width;
     uint16_t height;
@@ -45,22 +52,24 @@ struct doom_frame {
 };
 
 struct doom_col_texture {
-    doom_context *context;
+    struct doom_context *context;
 
 };
 
 struct doom_flat_texture {
-    doom_context *context;
+    struct doom_context *context;
 
     void *ptr_virt;
     doom_dma_ptr_t ptr_dma;
 };
 
 struct doom_colormaps {
-    doom_context *context;
+    struct doom_context *context;
 
     void *ptr_virt;
     doom_dma_ptr_t ptr_dma;
 
     int count;
 };
+
+#endif

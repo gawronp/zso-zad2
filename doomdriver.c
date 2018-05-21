@@ -10,6 +10,8 @@
 #include <linux/list.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
+#include <linux/wait.h>
+#include <linux/spinlock_types.h>
 
 #include "doomcode.h"
 #include "doomdev.h"
@@ -18,30 +20,21 @@
 #include "harddoom.h"
 
 #define DOOM_MAX_DEV_COUNT 256
+#define DRIVER_NAME "HardDoomDriver"
 
 MODULE_LICENSE("GPL");
 
-static const char * DRIVER_NAME = "HardDoomDriver";
-
-static struct pci_device_id doomdev_device = PCI_DEVICE(HARDDOOM_VENDOR_ID, HARDDOOM_DEVICE_ID);
-static struct pci_device_id zero_device = {
-        .vendor = 0,
-        .device = 0,
-        .subvendor = 0,
-        .subdevice = 0,
-        .class = 0,
-        .class_mask = 0,
-        .driver_data = 0,
+static const struct pci_device_id ids_table[2] = {
+        {PCI_DEVICE(HARDDOOM_VENDOR_ID, HARDDOOM_DEVICE_ID)}
 };
 
 static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id);
 static void doom_remove(struct pci_dev *dev);
 
+//static const struct pci_device_id ids_table = { doomdev_device, zero_device };
 static struct pci_driver this_driver = {
         .name = DRIVER_NAME,
-        .id_table = {
-                doomdev_device, zero_device
-        },
+        .id_table = ids_table,
         .probe = doom_probe,
         .remove = doom_remove,
 };
@@ -70,10 +63,10 @@ static struct file_operations doom_fops = {
     .compat_ioctl = doom_ioctl,
 };
 
-static int init_doom_device(struct doomdev *doomdev)
+static int init_doom_device(struct doom_device *doomdev)
 {
     int doomcode_idx;
-    int doomcode_len = sizeof(doomcode) / sizeof(uint_32t);
+    int doomcode_len = sizeof(doomcode) / sizeof(uint32_t);
 
     iowrite32(0, doomdev->bar0 + HARDDOOM_FE_CODE_ADDR);
     for (doomcode_idx = 0; doomcode_idx < doomcode_len; doomcode_idx++) {
@@ -83,30 +76,38 @@ static int init_doom_device(struct doomdev *doomdev)
     // maybe: zainicjować CMD_*_PTR, jeśli chcemy użyć bloku wczytywania pleceń,
     iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_INTR);
 //    iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_INTR_ENABLE); // maybe change that!!!
-    iowrite(0x3ff ^ HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR_ENABLE);
+    iowrite32(0x3ff ^ HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR_ENABLE);
     // maybe: zainicjować FENCE_*, jeśli czujemy taką potrzebę,
     iowrite32(0x3fe, doomdev->bar0 + HARDDOOM_ENABLE); // włączyć wszystkie bloki urządzenia w ENABLE (być może z wyjątkiem FETCH_CMD)
-    // TODO READ SOMETHING!
+    (void) ioread32(doomdev->bar0 + HARDDOOM_FIFO_FREE);
+
+    return 0;
+}
+
+static void cleanup_doom_device(struct doom_device *doomdev) {
+    iowrite32(0, doomdev->bar0 + HARDDOOM_ENABLE);
+    iowrite32(0, doomdev->bar0 + HARDDOOM_INTR_ENABLE);
+    (void) ioread32(doomdev->bar0 + HARDDOOM_FIFO_FREE);
 }
 
 static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
     int err;
-    void __iomem *iomem_mapped;
     struct doom_device *doomdev;
-
-    // maybe add drvdata?
-    spin_lock(&idr_lock);
-    dev->minor = idr_alloc(&doom_idr, dev, 0, DOOM_MAX_DEV_COUNT, GFP_KERNEL);
-    spin_unlock(&idr_lock);
 
     doomdev = kmalloc(sizeof(struct doom_device), GFP_KERNEL);
     // TODO: check pointer
 
+    // maybe add drvdata?
+    spin_lock(&idr_lock);
+    doomdev->minor = idr_alloc(&doom_idr, doomdev, 0, DOOM_MAX_DEV_COUNT, GFP_KERNEL);
+    spin_unlock(&idr_lock);
+
     doomdev->pdev = dev;
-    doomdev->surface_lock = SPIN_LOCK_UNLOCKED;
-    doomdev->mmio_lock = SPIN_LOCK_UNLOCKED;
-    doomdev->fifo_ping_remaining = PONG_ASYNC_MMIO_COMMANDS_SPAN;
+    mutex_init(&doomdev->surface_lock);
+    doomdev->mmio_lock = __SPIN_LOCK_UNLOCKED(doomdev->mmio_lock);
+    doomdev->fifo_ping_remaining = PING_ASYNC_MMIO_COMMANDS_SPAN;
+    init_waitqueue_head(&doomdev->pong_async_wait);
 
     cdev_init(&doomdev->cdev, &doom_fops);
 
@@ -122,7 +123,7 @@ static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id)
         goto err_enable_device;
     if ((err = pci_request_regions(dev, DRIVER_NAME)))
         goto err_request_regions;
-    iomem_mapped = pci_iomap(dev, 0, 0);
+    doomdev->bar0 = pci_iomap(dev, 0, 0);
 
     pci_set_master(dev);
     if ((err = pci_set_dma_mask(dev, DMA_BIT_MASK(32))))
@@ -130,18 +131,20 @@ static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id)
     if ((err = pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(32))))
         goto err_set_master;
 
-    pci_set_drvdata(dev, iomem_mapped);
+    pci_set_drvdata(dev, doomdev);
 
-    if ((err = request_irq(dev->iqr, interrupt_handler. IRQF_SHARED, DEVNAME, /* TODO: is this a good idea?*/ iomem_mapped)))
+    if ((err = request_irq(dev->irq, interrupt_handler, IRQF_SHARED, DEVNAME, doomdev)))
         goto err_request_irq;
 
-    goto success;
+    init_doom_device(doomdev);
+
+    return 0;
 
 err_request_irq:
 
 err_set_master:
     pci_clear_master(dev);
-    pci_iounmap(dev, iomem_mapped);
+    pci_iounmap(dev, doomdev->bar0);
 
     pci_release_regions(dev);
 err_request_regions:
@@ -149,14 +152,11 @@ err_request_regions:
 err_enable_device:
 err_cdev_add:
     return err;
-
-success:
-    return 0;
 }
 
 static irqreturn_t interrupt_handler(int irq, void *dev)
 {
-    doom_device *doomdev = dev;
+    struct doom_device *doomdev = dev;
     u32 intr;
 
     intr = ioread32(doomdev->bar0 + HARDDOOM_INTR);
@@ -165,22 +165,33 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
     }
     iowrite32(intr, doomdev->bar0 + HARDDOOM_INTR);
 
-    // TODO: tasklet_schedule(&dev->bh_tasklet);
+    // TODO: something?
     return IRQ_HANDLED;
 }
 
-static void doom_remove(struct pci_dev *dev)
+static void doom_remove(struct pci_dev *pdev)
 {
-    void __iomem *iomem_mapped = (void __iomem *) pci_get_drvdata(dev);
+    struct doom_device *dev = pci_get_drvdata(pdev);
 
-    pci_iounmap(dev, iomem_mapped);
-    pci_release_regions(dev);
-    pci_disable_device(dev);
+    cdev_del(&dev->cdev);
+    device_destroy(&doom_class, doom_major + dev->minor);
+
+    spin_lock(&idr_lock);
+    idr_remove(&doom_idr, dev->minor);
+    spin_unlock(&idr_lock);
+
+    cleanup_doom_device(dev);
+
+    pci_iounmap(pdev, dev->bar0);
+    pci_release_regions(dev->pdev);
+    pci_disable_device(dev->pdev);
+
+    kfree(dev);
 }
 
-static int doom_ioctl(struct file *file, unsigned int cmd, uint64_t arg)
+static long doom_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    doom_context *context = file->private_data;
+    struct doom_context *context = file->private_data;
 
     switch (cmd) {
     case DOOMDEV_IOCTL_CREATE_SURFACE:
@@ -202,7 +213,7 @@ static int doom_open(struct inode *ino, struct file *filep)
     struct doom_context *context;
 
     spin_lock(&idr_lock);
-    dev = idr_find(&doom_idr, MINOR(inode->i_rdev));
+    dev = idr_find(&doom_idr, MINOR(ino->i_rdev));
     spin_unlock(&idr_lock);
 
     if (unlikely(dev == NULL)) {
@@ -253,7 +264,7 @@ static void doom_cleanup(void)
     pci_unregister_driver(&this_driver);
     idr_destroy(&doom_idr);
     unregister_chrdev_region(doom_major, DOOM_MAX_DEV_COUNT);
-    class_unregister(&doomdev_class);
+    class_unregister(&doom_class);
 }
 
 module_init(doom_init);
