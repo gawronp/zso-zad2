@@ -1,12 +1,13 @@
 #ifndef DOOM_COMMON_H
 #define DOOM_COMMON_H
 
+#include <linux/dma-mapping.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/cdev.h>
 #include <linux/wait.h>
 
-#define DEVNAME "DoomDev"
+#define DEVNAME "doom"
 
 #define DOOMDEV_SURFACE_MIN_WIDTH 64
 #define DOOMDEV_SURFACE_MAX_WIDTH 2048

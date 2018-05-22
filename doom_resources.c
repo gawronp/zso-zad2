@@ -17,10 +17,10 @@ static struct file_operations doom_frame_fops = {
         .compat_ioctl = doom_frame_ioctl,
 };
 
-static struct file_operations doom_col_texture_fops = {
-        .owner = THIS_MODULE,
-        .release = doom_col_texture_release,
-};
+//static struct file_operations doom_col_texture_fops = {
+//        .owner = THIS_MODULE,
+//        .release = doom_col_texture_release,
+//};
 
 static struct file_operations doom_flat_texture_fops = {
         .owner = THIS_MODULE,
@@ -38,48 +38,66 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
     int frame_fd;
     struct doom_frame *frame;
     struct doom_device *doomdev;
-    int page_table_required_entries;
+    int page_table_required_size;
     dma_addr_t dma_addr;
+    struct doomdev_ioctl_create_surface kernel_arg;
 
-    if (ptr == NULL
-        || ptr->width < DOOMDEV_SURFACE_MIN_WIDTH
-        || ptr->width % DOOMDEV_SURFACE_WIDTH_DIVISIBLE != 0
-        || DOOMDEV_SURFACE_MIN_WIDTH < ptr->width
-        || ptr->height < DOOMDEV_SURFACE_MIN_HEIGHT
-        || DOOMDEV_SURFACE_MAX_HEIGHT < ptr->height)
+    if (copy_from_user(&kernel_arg, ptr, sizeof(struct doomdev_ioctl_create_surface))) {
+        pr_err("1\n");
+        return -EFAULT;
+    }
+
+    if (kernel_arg.width < DOOMDEV_SURFACE_MIN_WIDTH
+        || kernel_arg.width % DOOMDEV_SURFACE_WIDTH_DIVISIBLE != 0
+        || DOOMDEV_SURFACE_MAX_WIDTH < kernel_arg.width
+        || kernel_arg.height < DOOMDEV_SURFACE_MIN_HEIGHT
+        || DOOMDEV_SURFACE_MAX_HEIGHT < kernel_arg.height) {
+        pr_err("2\n");
         return -EINVAL;
+    }
 
     doomdev = context->dev;
 
     frame = kmalloc(sizeof(struct doom_frame), GFP_KERNEL);
     frame->context = context;
-    frame->width = ptr->width;
-    frame->height = ptr->height;
-    frame->pages_count = roundup(ptr->width * ptr->height, HARDDOOM_PAGE_SIZE) / HARDDOOM_PAGE_SIZE;
-    page_table_required_entries = roundup(frame->pages_count * sizeof(uint32_t), DOOMDEV_PT_ALIGN);
+    frame->width = kernel_arg.width;
+    frame->height = kernel_arg.height;
+    frame->pages_count = roundup(kernel_arg.width * kernel_arg.height, HARDDOOM_PAGE_SIZE) / HARDDOOM_PAGE_SIZE;
+    page_table_required_size = roundup(frame->pages_count * sizeof(doom_dma_ptr_t), DOOMDEV_PT_ALIGN);
 
-    /* alloc page table */
-    frame->pt_dma = dma_alloc_coherent(doomdev->dev, page_table_required_entries * sizeof(doom_dma_ptr_t),
-            &dma_addr, GFP_KERNEL);
+    // alloc page table:
+    frame->pt_dma = dma_alloc_coherent(&doomdev->pdev->dev,
+                                       page_table_required_size,
+                                       &dma_addr,
+                                       GFP_KERNEL);
     frame->pt_dma_addr = (doom_dma_ptr_t) dma_addr;
-    frame->pt_virt = kmalloc(frame->pages_count * sizeof(void *), GFP_KERNEL);
+    frame->pt_virt = kmalloc(frame->pages_count * sizeof(doom_dma_ptr_t *), GFP_KERNEL);
 
     if (unlikely(!frame->pt_dma || !frame->pt_dma_addr || !frame->pt_virt)) {
+        pr_err("3\n");
         return -ENOMEM;
     }
 
     for (i = 0; i < frame->pages_count; i++) {
-        frame->pt_virt[i] = dma_alloc_coherent(doomdev->dev, HARDDOOM_PAGE_SIZE * sizeof(doom_dma_ptr_t),
+        pr_err("l1\n");
+        frame->pt_virt[i] = dma_alloc_coherent(&doomdev->pdev->dev, HARDDOOM_PAGE_SIZE,
                                                &dma_addr, GFP_KERNEL);
+        pr_err("l2\n");
         if (unlikely(!dma_addr)) {
+            pr_err("4\n");
             return -ENOMEM;
         }
-        frame->pt_dma[i] = (dma_addr & HARDDOOM_PTE_PHYS_MASK) | HARDDOOM_PTE_VALID;
+        pr_err("l3\n");
+        frame->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
     }
-
+    pr_err("al\n");
     frame_fd = anon_inode_getfd("frame", &doom_frame_fops, frame, FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE);
+    if (IS_ERR_VALUE((unsigned long) frame_fd)) {
+        pr_err("anon_inode_getfd returned err: %d\n", frame_fd);
+    }
     // TODO check for errors
-
+    pr_err("WORKS!!!!!!\n");
+    return -1;
     return frame_fd;
 }
 
@@ -92,20 +110,26 @@ int create_flat_texture(struct doom_context * context, struct doomdev_ioctl_crea
 {
     int flat_texture_fd;
     struct doom_flat_texture *texture;
-    int copy_from_user_retval;
     dma_addr_t dma_addr;
+    struct doomdev_ioctl_create_flat kernel_arg;
+
+    if (copy_from_user(&kernel_arg, ptr, sizeof(struct doomdev_ioctl_create_flat))) {
+        return -EFAULT;
+    }
 
     texture = kmalloc(sizeof(struct doom_flat_texture), GFP_KERNEL);
     texture->context = context;
 
-    texture->ptr_virt = dma_alloc_coherent(context->dev->dev, HARDDOOM_FLAT_SIZE,
+    texture->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_FLAT_SIZE,
                                            &dma_addr, GFP_KERNEL);
     if (unlikely(!texture->ptr_virt || !dma_addr)) {
         return -ENOMEM;
     }
     texture->ptr_dma = dma_addr;
 
-    copy_from_user_retval = copy_from_user(texture->ptr_virt, (void *) ptr->data_ptr, HARDDOOM_FLAT_SIZE);
+    if(copy_from_user(texture->ptr_virt, (void *) kernel_arg.data_ptr, HARDDOOM_FLAT_SIZE)) {
+        return -EFAULT;
+    }
     // TODO check for errors
 
     flat_texture_fd = anon_inode_getfd("flat_texture", &doom_flat_texture_fops, texture, 0);
@@ -118,22 +142,28 @@ int create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_c
 {
     int colormaps_array_fd;
     struct doom_colormaps *colormaps;
-    int copy_from_user_retval;
     dma_addr_t dma_addr;
+    struct doomdev_ioctl_create_colormaps kernel_arg;
+
+    if (copy_from_user(&kernel_arg, ptr, sizeof(struct doomdev_ioctl_create_colormaps))) {
+        return -EFAULT;
+    }
 
     colormaps = kmalloc(sizeof(struct doom_colormaps), GFP_KERNEL);
     colormaps->context = context;
-    colormaps->count = ptr->num;
+    colormaps->count = kernel_arg.num;
 
-    colormaps->ptr_virt = dma_alloc_coherent(context->dev->dev, colormaps->count * HARDDOOM_COLORMAP_SIZE,
+    colormaps->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev, colormaps->count * HARDDOOM_COLORMAP_SIZE,
                                              &dma_addr, GFP_KERNEL);
     if (unlikely(!colormaps->ptr_virt || !dma_addr)) {
         return -ENOMEM;
     }
     colormaps->ptr_dma = dma_addr;
 
-    copy_from_user_retval = copy_from_user(colormaps->ptr_virt, (void *) ptr->data_ptr,
-                                           colormaps->count * HARDDOOM_COLORMAP_SIZE);
+    if (copy_from_user(colormaps->ptr_virt, (void *) kernel_arg.data_ptr,
+                       colormaps->count * HARDDOOM_COLORMAP_SIZE)) {
+        return -ENOMEM;
+    }
     // TODO check for errors
 
     colormaps_array_fd = anon_inode_getfd("colormaps", &doom_colormaps_fops, colormaps, 0);
@@ -168,10 +198,10 @@ int doom_frame_release(struct inode *ino, struct file *filep)
     struct doom_frame *frame = filep->private_data;
 
     for (i = 0; i < frame->pages_count; i++) {
-        dma_free_coherent(frame->context->dev->dev, HARDDOOM_PAGE_SIZE * sizeof(doom_dma_ptr_t),
+        dma_free_coherent(&frame->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE * sizeof(doom_dma_ptr_t),
                           frame->pt_virt[i], frame->pt_dma[i]);
     }
-    dma_free_coherent(frame->context->dev->dev, HARDDOOM_PAGE_SIZE * sizeof(doom_dma_ptr_t),
+    dma_free_coherent(&frame->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE * sizeof(doom_dma_ptr_t),
                       frame->pt_virt, frame->pt_dma_addr);
 
     kfree(frame);

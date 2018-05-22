@@ -45,7 +45,7 @@ static DEFINE_IDR(doom_idr);
 static DEFINE_SPINLOCK(idr_lock);
 
 static struct class doom_class = {
-    .name = "doom",
+    .name = DEVNAME,
     .owner = THIS_MODULE,
 };
 
@@ -90,7 +90,7 @@ static void cleanup_doom_device(struct doom_device *doomdev) {
     (void) ioread32(doomdev->bar0 + HARDDOOM_FIFO_FREE);
 }
 
-static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
     int err;
     struct doom_device *doomdev;
@@ -103,7 +103,7 @@ static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id)
     doomdev->minor = idr_alloc(&doom_idr, doomdev, 0, DOOM_MAX_DEV_COUNT, GFP_KERNEL);
     spin_unlock(&idr_lock);
 
-    doomdev->pdev = dev;
+    doomdev->pdev = pdev;
     mutex_init(&doomdev->surface_lock);
     doomdev->mmio_lock = __SPIN_LOCK_UNLOCKED(doomdev->mmio_lock);
     doomdev->fifo_ping_remaining = PING_ASYNC_MMIO_COMMANDS_SPAN;
@@ -115,40 +115,45 @@ static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id)
         goto err_cdev_add;
 
     doomdev->dev = device_create(
-            &doom_class, NULL, doom_major + doomdev->minor, NULL, "doom%d", doomdev->minor);
+            &doom_class, &pdev->dev, doomdev->cdev.dev, doomdev, "doom%d", doomdev->minor);
 
 //    doomdev->dma_pool = dma_pool_create(DEVNAME, dev, DOOMDEV_PAGE_SIZE, DOOMDEV_PAGE_SIZE, 0);
 
-    if ((err = pci_enable_device(dev)))
+    if ((err = pci_enable_device(pdev)))
         goto err_enable_device;
-    if ((err = pci_request_regions(dev, DRIVER_NAME)))
+    if ((err = pci_request_regions(pdev, DEVNAME)))
         goto err_request_regions;
-    doomdev->bar0 = pci_iomap(dev, 0, 0);
+    doomdev->bar0 = pci_iomap(pdev, 0, 0);
 
-    pci_set_master(dev);
-    if ((err = pci_set_dma_mask(dev, DMA_BIT_MASK(32))))
+    pci_set_master(pdev);
+    if ((err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32)))) {
         goto err_set_master;
-    if ((err = pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(32))))
-        goto err_set_master;
+    }
+//    if ((err = pci_set_dma_mask(doomdev->dev, DMA_BIT_MASK(32))))
+//        goto err_set_master;
+//    if ((err = pci_set_consistent_dma_mask(doomdev->dev, DMA_BIT_MASK(32))))
+//        goto err_set_master;
 
-    pci_set_drvdata(dev, doomdev);
+    pci_set_drvdata(pdev, doomdev);
 
-    if ((err = request_irq(dev->irq, interrupt_handler, IRQF_SHARED, DEVNAME, doomdev)))
+    if ((err = request_irq(pdev->irq, interrupt_handler, IRQF_SHARED, DEVNAME, doomdev)))
         goto err_request_irq;
 
     init_doom_device(doomdev);
+
+    printk(KERN_INFO "doom device probed sucessfully!\n");
 
     return 0;
 
 err_request_irq:
 
 err_set_master:
-    pci_clear_master(dev);
-    pci_iounmap(dev, doomdev->bar0);
+    pci_clear_master(pdev);
+    pci_iounmap(pdev, doomdev->bar0);
 
-    pci_release_regions(dev);
+    pci_release_regions(pdev);
 err_request_regions:
-    pci_disable_device(dev);
+    pci_disable_device(pdev);
 err_enable_device:
 err_cdev_add:
     return err;
@@ -217,12 +222,14 @@ static int doom_open(struct inode *ino, struct file *filep)
     spin_unlock(&idr_lock);
 
     if (unlikely(dev == NULL)) {
-        // TODO
+//        printk(KERN_INFO "Error getting device data, id might not be valid.\n");
+        pr_err("Error getting device data, id might not be valid.");
         return -EIO;
     }
 
     context = kmalloc(sizeof(struct doom_context), GFP_KERNEL);
     if (unlikely(!context)) {
+//        printk(KERN_INFO "kmalloc failed\n");
         pr_err("kmalloc failed\n");
         return -ENOMEM;
     }
@@ -246,7 +253,7 @@ static int doom_init(void)
     if ((err = class_register(&doom_class)))
         return err;
 
-    if ((err = alloc_chrdev_region(&doom_major, 0, DOOM_MAX_DEV_COUNT, "doom")))
+    if ((err = alloc_chrdev_region(&doom_major, 0, DOOM_MAX_DEV_COUNT, DEVNAME)))
         goto err_alloc_region;
 
     if ((err = pci_register_driver(&this_driver)))
