@@ -16,6 +16,7 @@
 #define DOOMDEV_SURFACE_MAX_HEIGHT 2048
 
 #define DOOMDEV_PT_ALIGN 64
+#define DOOMDEV_COL_TEXTURE_MEM_ALIGN 256
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
 
@@ -50,11 +51,22 @@ struct doom_frame {
     doom_dma_ptr_t pt_dma_addr;
 //    doom_ptr_t *pages_dma;
     int pages_count;
+    size_t page_table_size;
 };
 
 struct doom_col_texture {
     struct doom_context *context;
 
+    uint16_t height;
+
+    void **pt_virt;
+    doom_dma_ptr_t *pt_dma;
+    doom_dma_ptr_t pt_dma_addr;
+
+    int pages_count;
+    size_t page_table_size;
+    size_t texture_size;
+    size_t rounded_texture_size;
 };
 
 struct doom_flat_texture {
