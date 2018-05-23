@@ -176,6 +176,16 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
             pr_err("FE_ERROR_CODE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
             pr_err("FE_ERROR_DATA: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CMD));
         }
+
+        if (intr & HARDDOOM_INTR_PAGE_FAULT_TEXTURE) {
+            pr_err("TLB_PT_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_PT_TEXTURE));
+            pr_err("TLB_VADDR_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_VADDR_TEXTURE));
+        }
+
+        if (intr & HARDDOOM_INTR_PAGE_FAULT_SURF_DST) {
+            pr_err("TLB_PT_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_PT_SURF_DST));
+            pr_err("TLB_VADDR_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_VADDR_SURF_DST));
+        }
     }
     if (!intr) {
         return IRQ_NONE;

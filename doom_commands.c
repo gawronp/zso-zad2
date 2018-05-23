@@ -13,9 +13,10 @@ void send_command(struct doom_context *context, doom_command_t comm)
     uint32_t enabled_interrupts;
     unsigned long flags;
 
-//    while(!ioread32(context->dev->bar0 + HARDDOOM_FIFO_FREE)) {
-//    }
+
     spin_lock_irqsave(&context->dev->mmio_lock, flags);
+    while(!ioread32(context->dev->bar0 + HARDDOOM_FIFO_FREE)) {
+    }
 //    free_fifo_space = ioread32(context->dev->bar0 + HARDDOOM_FIFO_FREE);
 //    if (!free_fifo_space) {
 //        iowrite32(HARDDOOM_INTR_PONG_ASYNC, context->dev->bar0 + HARDDOOM_INTR);

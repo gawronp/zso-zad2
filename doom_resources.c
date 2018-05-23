@@ -90,6 +90,7 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
             return -ENOMEM;
         }
         frame->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
+        pr_err("frame->pt_virt[%d]: %llx frame->pt_dma[%d] = %x\n", i, frame->pt_virt[i], i, frame->pt_dma[i]);
     }
     frame_fd = anon_inode_getfd("frame", &doom_frame_fops, frame, 0);
     if (IS_ERR_VALUE((unsigned long) frame_fd)) {
@@ -100,6 +101,7 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
     created_file->f_mode |= FMODE_READ | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
     fput(created_file);
 
+    wmb();
     return frame_fd;
 }
 
@@ -152,6 +154,7 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
             return -ENOMEM;
         }
         col_texture->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
+        pr_err("col_texture->pt_dma[%d] = %x\n", i, col_texture->pt_dma[i]);
         to_copy = min((size_t) HARDDOOM_PAGE_SIZE, col_texture->texture_size - i * HARDDOOM_PAGE_SIZE);
         if (copy_from_user(col_texture->pt_virt[i] + i * HARDDOOM_PAGE_SIZE,
                            (void *) kernel_arg.data_ptr + i * HARDDOOM_PAGE_SIZE, to_copy)) {
@@ -169,6 +172,7 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
         pr_err("anon inode getfd return err %d\n", col_texture_fd);
     }
 
+    wmb();
     return col_texture_fd;
 }
 
@@ -197,7 +201,7 @@ int create_flat_texture(struct doom_context * context, struct doomdev_ioctl_crea
         return -EFAULT;
     }
     // TODO check for errors
-
+    wmb();
     flat_texture_fd = anon_inode_getfd("flat_texture", &doom_flat_texture_fops, texture, 0);
     // TODO check for errors
 
@@ -231,7 +235,7 @@ int create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_c
         return -EFAULT;
     }
     // TODO check for errors
-
+    wmb();
     colormaps_array_fd = anon_inode_getfd("colormaps", &doom_colormaps_fops, colormaps, 0);
     // TODO check for errors
 
@@ -294,20 +298,22 @@ int doom_frame_release(struct inode *ino, struct file *filep)
 
     mutex_lock(&frame->context->dev->surface_lock);
 
-    send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
-    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
-    while (!frame->context->dev->read_flag) {
-        spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
-        wait_event_interruptible(frame->context->dev->read_sync_wait, frame->context->dev->read_flag > 0);
-        spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
-    }
-    frame->context->dev->read_flag = 0;
-    spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//    send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
+//    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//    while (!frame->context->dev->read_flag) {
+//        spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//        wait_event_interruptible(frame->context->dev->read_sync_wait, frame->context->dev->read_flag > 0);
+//        spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//    }
+//    frame->context->dev->read_flag = 0;
+//    spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
 
     for (i = 0; i < frame->pages_count; i++) {
+        pr_err("freeing kernel: %llx\n", frame->pt_virt[i]);
         dma_free_coherent(&frame->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE,
                           frame->pt_virt[i], frame->pt_dma[i]);
     }
+    pr_err("freeing kernel PT: %llx\n", frame->pt_dma);
     dma_free_coherent(&frame->context->dev->pdev->dev, frame->page_table_size,
                       frame->pt_dma, frame->pt_dma_addr);
     kfree(frame->pt_virt);
@@ -622,27 +628,26 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
         help_file = fget(kernel_arg.texture_fd);
         // TODO check for errors
         texture = help_file->private_data;
+        fput(help_file);
         send_command(frame->context, HARDDOOM_CMD_TEXTURE_PT(texture->pt_dma_addr));
-        send_command(frame->context,
-                     HARDDOOM_CMD_TEXTURE_DIMS(texture->rounded_texture_size / DOOMDEV_COL_TEXTURE_MEM_ALIGN - 1,
-                                               texture->height));
+        send_command(frame->context, HARDDOOM_CMD_TEXTURE_DIMS(texture->rounded_texture_size, texture->height));
     }
     send_command(frame->context, HARDDOOM_CMD_DRAW_PARAMS(kernel_arg.draw_flags));
     if (kernel_arg.draw_flags & DOOMDEV_DRAW_FLAGS_FUZZ || kernel_arg.draw_flags & DOOMDEV_DRAW_FLAGS_COLORMAP) {
         help_file = fget(kernel_arg.colormaps_fd);
         colormaps_color = help_file->private_data;
+        fput(help_file);
     }
     if (kernel_arg.draw_flags & DOOMDEV_DRAW_FLAGS_TRANSLATE) {
         help_file = fget(kernel_arg.translations_fd);
         colormaps_transl = help_file->private_data;
+        fput(help_file);
         send_command(frame->context,
                      HARDDOOM_CMD_TRANSLATION_ADDR(colormaps_transl->ptr_dma
                                                    + kernel_arg.translation_idx * HARDDOOM_COLORMAP_SIZE));
     }
     for (i = 0; i < kernel_arg.columns_num; i++) {
         if (copy_from_user(&current_collumn, ptr, sizeof(struct doomdev_column))) {
-            if (help_file != NULL)
-                fput(help_file);
             mutex_unlock(&frame->context->dev->surface_lock);
             if (i == 0)
                 return -EFAULT; // TODO normal error code!!
@@ -652,15 +657,13 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
         ptr += sizeof(struct doomdev_column);
 
         if (current_collumn.y1 > current_collumn.y2) {
-            if (help_file != NULL)
-                fput(help_file);
             mutex_unlock(&frame->context->dev->surface_lock);
             return -EINVAL;
         }
 
         send_command(frame->context, HARDDOOM_CMD_XY_A(current_collumn.x, current_collumn.y1));
         send_command(frame->context, HARDDOOM_CMD_XY_B(current_collumn.x, current_collumn.y2));
-        if (colormaps_color != NULL && (i == 0 || prev_column.colormap_idx != current_collumn.colormap_idx)) {
+        if (colormaps_color != NULL/* && (i == 0 || prev_column.colormap_idx != current_collumn.colormap_idx)*/) {
             send_command(frame->context,
                          HARDDOOM_CMD_COLORMAP_ADDR(colormaps_color->ptr_dma
                                                     + current_collumn.colormap_idx * HARDDOOM_COLORMAP_SIZE));
@@ -670,11 +673,9 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
             send_command(frame->context, HARDDOOM_CMD_USTEP(current_collumn.ustep));
         }
         send_command(frame->context, HARDDOOM_CMD_DRAW_COLUMN(current_collumn.texture_offset));
-        prev_column = current_collumn;
+//        prev_column = current_collumn;
     }
 //    pr_err("COLUMN FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
-    if (help_file != NULL)
-        fput(help_file);
     mutex_unlock(&frame->context->dev->surface_lock);
 
     return kernel_arg.columns_num;
@@ -735,7 +736,7 @@ int doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_dr
 
         send_command(frame->context, HARDDOOM_CMD_XY_A(current_span.x1, current_span.y));
         send_command(frame->context, HARDDOOM_CMD_XY_B(current_span.x2, current_span.y));
-        if (colormaps_color != NULL && (i == 0 || current_span.colormap_idx != prev_span.colormap_idx)) {
+        if (colormaps_color != NULL/* && (i == 0 || current_span.colormap_idx != prev_span.colormap_idx)*/) {
             send_command(frame->context,
                          HARDDOOM_CMD_COLORMAP_ADDR(colormaps_color->ptr_dma
                                                     + current_span.colormap_idx * HARDDOOM_COLORMAP_SIZE));
@@ -745,7 +746,7 @@ int doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_dr
         send_command(frame->context, HARDDOOM_CMD_VSTART(current_span.vstart));
         send_command(frame->context, HARDDOOM_CMD_VSTEP(current_span.vstep));
         send_command(frame->context, HARDDOOM_CMD_DRAW_SPAN);
-        prev_span = current_span;
+//        prev_span = current_span;
     }
 //    pr_err("SPAN FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
     mutex_unlock(&frame->context->dev->surface_lock);
