@@ -30,6 +30,9 @@ struct doom_device {
     int minor;
 //    struct dma_pool *dma_pool;
     struct mutex surface_lock;
+    wait_queue_head_t read_sync_wait;
+    spinlock_t read_flag_spinlock;
+    int read_flag;
     spinlock_t mmio_lock;
     int fifo_ping_remaining;
     wait_queue_head_t pong_async_wait;

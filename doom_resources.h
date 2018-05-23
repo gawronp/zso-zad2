@@ -12,6 +12,7 @@ int create_flat_texture(struct doom_context * context, struct doomdev_ioctl_crea
 int create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_create_colormaps * ptr);
 
 long doom_frame_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+loff_t doom_frame_llseek(struct file * filp, loff_t off, int whence);
 int doom_frame_release(struct inode *ino, struct file *filep);
 ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff_t *offp);
 

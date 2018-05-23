@@ -108,6 +108,9 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     doomdev->mmio_lock = __SPIN_LOCK_UNLOCKED(doomdev->mmio_lock);
     doomdev->fifo_ping_remaining = PING_ASYNC_MMIO_COMMANDS_SPAN;
     init_waitqueue_head(&doomdev->pong_async_wait);
+    init_waitqueue_head(&doomdev->read_sync_wait);
+    doomdev->read_flag_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->read_flag_spinlock);
+    doomdev->read_flag = 0;
 
     cdev_init(&doomdev->cdev, &doom_fops);
 
@@ -163,12 +166,38 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
 {
     struct doom_device *doomdev = dev;
     u32 intr;
+    unsigned long flags;
+    uint32_t enabled_interrupts;
 
     intr = ioread32(doomdev->bar0 + HARDDOOM_INTR);
+    if (intr & (HARDDOOM_INTR_FE_ERROR | HARDDOOM_INTR_FIFO_OVERFLOW | HARDDOOM_INTR_SURF_DST_OVERFLOW | HARDDOOM_INTR_SURF_SRC_OVERFLOW | HARDDOOM_INTR_PAGE_FAULT_SURF_DST | HARDDOOM_INTR_PAGE_FAULT_SURF_SRC | HARDDOOM_INTR_PAGE_FAULT_TEXTURE)) {
+        pr_err("interrupt came: %x\n", intr);
+        if (intr & HARDDOOM_INTR_FE_ERROR) {
+            pr_err("FE_ERROR_CODE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
+            pr_err("FE_ERROR_DATA: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CMD));
+        }
+    }
     if (!intr) {
         return IRQ_NONE;
     }
     iowrite32(intr, doomdev->bar0 + HARDDOOM_INTR);
+
+    if (intr & HARDDOOM_INTR_PONG_SYNC) {
+        spin_lock_irqsave(&doomdev->read_flag_spinlock, flags);
+        doomdev->read_flag = 1;
+        wake_up(&doomdev->read_sync_wait);
+        spin_unlock_irqrestore(&doomdev->read_flag_spinlock, flags);
+    }
+
+    if (intr & HARDDOOM_INTR_PONG_ASYNC) {
+        enabled_interrupts = ioread32(doomdev->bar0 + HARDDOOM_INTR_ENABLE);
+        iowrite32(enabled_interrupts & (~HARDDOOM_INTR_PONG_ASYNC), doomdev->bar0 + HARDDOOM_INTR_ENABLE);
+        wake_up(&doomdev->pong_async_wait);
+    }
+
+    if (intr & HARDDOOM_INTR_FE_ERROR) {
+        pr_err("last error: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
+    }
 
     // TODO: something?
     return IRQ_HANDLED;
