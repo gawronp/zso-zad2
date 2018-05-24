@@ -7,6 +7,7 @@
 #include <linux/cdev.h>
 #include <linux/wait.h>
 #include <linux/completion.h>
+#include <linux/interrupt.h>
 
 #define DEVNAME "doom"
 
@@ -21,7 +22,7 @@
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
 
-#define DOOM_BUFFER_SIZE 4096
+#define DOOM_BUFFER_SIZE (16 * 4096)
 #define DOOM_BUFFER_CRIT_LOW_SIZE 2
 
 typedef uint32_t doom_dma_ptr_t;
@@ -44,6 +45,9 @@ struct doom_device {
     int fifo_ping_remaining;
     wait_queue_head_t pong_async_wait;
 
+    spinlock_t tasklet_spinlock;
+    struct tasklet_struct tasklet_ping_sync;
+    struct tasklet_struct tasklet_ping_async;
     struct completion *ping_sync_event;
     struct completion *ping_async_event;
 

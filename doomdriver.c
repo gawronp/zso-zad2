@@ -96,6 +96,50 @@ static void cleanup_doom_device(struct doom_device *doomdev) {
     (void) ioread32(doomdev->bar0 + HARDDOOM_FIFO_FREE);
 }
 
+static void doom_tasklet(unsigned long _doom_device) {
+    struct doom_device *doomdev = (struct doom_device *) _doom_device;
+
+    spin_lock(&doomdev->tasklet_spinlock);
+
+    // CODE GOES HERE
+
+
+    spin_unlock(&doomdev->tasklet_spinlock);
+}
+
+
+static void doom_tasklet_ping_sync(unsigned long _doom_device) {
+    struct doom_device *doomdev = (struct doom_device *) _doom_device;
+
+    spin_lock(&doomdev->tasklet_spinlock);
+
+    // CODE GOES HERE
+
+    if (doomdev->ping_sync_event != NULL) {
+        complete(doomdev->ping_sync_event);
+        doomdev->ping_sync_event = NULL;
+    }
+
+    spin_unlock(&doomdev->tasklet_spinlock);
+}
+
+static void doom_tasklet_ping_async(unsigned long _doom_device) {
+    struct doom_device *doomdev = (struct doom_device *) _doom_device;
+
+    spin_lock(&doomdev->tasklet_spinlock);
+
+
+    // CODE GOES HERE
+    if (doomdev->ping_async_event != NULL) {
+        complete(doomdev->ping_async_event);
+        doomdev->ping_async_event = NULL;
+    }
+
+    spin_unlock(&doomdev->tasklet_spinlock);
+}
+
+
+
 static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
     int err;
@@ -117,7 +161,11 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     init_waitqueue_head(&doomdev->pong_async_wait);
     init_waitqueue_head(&doomdev->read_sync_wait);
     doomdev->read_flag_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->read_flag_spinlock);
+    doomdev->tasklet_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->read_flag_spinlock);
     doomdev->read_flag = 0;
+
+    tasklet_init(&doomdev->tasklet_ping_sync, doom_tasklet_ping_sync, (unsigned long) doomdev);
+    tasklet_init(&doomdev->tasklet_ping_async, doom_tasklet_ping_async, (unsigned long) doomdev);
 
     cdev_init(&doomdev->cdev, &doom_fops);
 
@@ -214,15 +262,24 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
 //        doomdev->read_flag = 1;
 //        wake_up(&doomdev->read_sync_wait);
 //        spin_unlock_irqrestore(&doomdev->read_flag_spinlock, flags);
-        complete(doomdev->ping_sync_event);
+        iowrite32(HARDDOOM_INTR_PONG_SYNC, doomdev->bar0 + HARDDOOM_INTR);
+        tasklet_schedule(&doomdev->tasklet_ping_sync);
+//        if (doomdev->ping_sync_event != NULL) {
+//            complete(doomdev->ping_sync_event);
+//            doomdev->ping_sync_event = NULL;
+//        }
     }
 
     if (intr & HARDDOOM_INTR_PONG_ASYNC) {
         enabled_interrupts = ioread32(doomdev->bar0 + HARDDOOM_INTR_ENABLE);
         iowrite32(enabled_interrupts & (~HARDDOOM_INTR_PONG_ASYNC), doomdev->bar0 + HARDDOOM_INTR_ENABLE);
         iowrite32(HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR);
-        if (doomdev->ping_async_event != NULL)
-            complete(doomdev->ping_async_event);
+        tasklet_schedule(&doomdev->tasklet_ping_async);
+//        if (doomdev->ping_async_event != NULL) {
+//            complete(doomdev->ping_async_event);
+//            doomdev->ping_async_event = NULL;
+//        }
+
 //        wake_up(&doomdev->pong_async_wait);
     }
 
