@@ -6,6 +6,7 @@
 #include <linux/mutex.h>
 #include <linux/cdev.h>
 #include <linux/wait.h>
+#include <linux/completion.h>
 
 #define DEVNAME "doom"
 
@@ -20,8 +21,14 @@
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
 
+#define DOOM_BUFFER_SIZE 4096
+#define DOOM_BUFFER_CRIT_LOW_SIZE 2
+
 typedef uint32_t doom_dma_ptr_t;
 typedef uint32_t doom_command_t;
+
+static DEFINE_IDR(global_fence);
+static DEFINE_SPINLOCK(global_fence_spinlock);
 
 struct doom_device {
     struct cdev cdev;
@@ -36,6 +43,14 @@ struct doom_device {
     spinlock_t mmio_lock;
     int fifo_ping_remaining;
     wait_queue_head_t pong_async_wait;
+
+    struct completion *ping_sync_event;
+    struct completion *ping_async_event;
+
+    doom_command_t *buffer;
+    doom_dma_ptr_t dma_buffer;
+    int doom_buffer_pos_write;
+    spinlock_t buffer_spinlock;
 
     void __iomem *bar0;
 };
@@ -55,6 +70,8 @@ struct doom_frame {
 //    doom_ptr_t *pages_dma;
     int pages_count;
     size_t page_table_size;
+
+//    rwlock_t frame_rw_lock;
 };
 
 struct doom_col_texture {

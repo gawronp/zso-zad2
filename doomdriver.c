@@ -78,7 +78,13 @@ static int init_doom_device(struct doom_device *doomdev)
 //    iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_INTR_ENABLE); // maybe change that!!!
     iowrite32(0x3ff ^ HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR_ENABLE);
     // maybe: zainicjować FENCE_*, jeśli czujemy taką potrzebę,
-    iowrite32(0x3fe, doomdev->bar0 + HARDDOOM_ENABLE); // włączyć wszystkie bloki urządzenia w ENABLE (być może z wyjątkiem FETCH_CMD)
+
+    // for BLOCK:
+    iowrite32(doomdev->dma_buffer, doomdev->bar0 + HARDDOOM_CMD_WRITE_PTR);
+    iowrite32(doomdev->dma_buffer, doomdev->bar0 + HARDDOOM_CMD_READ_PTR);
+    iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_ENABLE);
+
+//    iowrite32(0x3fe, doomdev->bar0 + HARDDOOM_ENABLE); // włączyć wszystkie bloki urządzenia w ENABLE (być może z wyjątkiem FETCH_CMD)
     (void) ioread32(doomdev->bar0 + HARDDOOM_FIFO_FREE);
 
     return 0;
@@ -93,6 +99,7 @@ static void cleanup_doom_device(struct doom_device *doomdev) {
 static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
     int err;
+    dma_addr_t buffer_addr;
     struct doom_device *doomdev;
 
     doomdev = kmalloc(sizeof(struct doom_device), GFP_KERNEL);
@@ -132,6 +139,15 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     if ((err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32)))) {
         goto err_set_master;
     }
+
+    doomdev->buffer = dma_alloc_coherent(&pdev->dev, DOOM_BUFFER_SIZE * sizeof(doom_command_t),
+                                         &buffer_addr, GFP_KERNEL);
+    doomdev->dma_buffer = (doom_dma_ptr_t) buffer_addr;
+    /*kmalloc(DOOM_BUFFER_SIZE * sizeof(doom_command_t), GFP_KERNEL);*/
+    // TODO check
+    doomdev->doom_buffer_pos_write = 0;
+    doomdev->buffer_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->buffer_spinlock);
+
 //    if ((err = pci_set_dma_mask(doomdev->dev, DMA_BIT_MASK(32))))
 //        goto err_set_master;
 //    if ((err = pci_set_consistent_dma_mask(doomdev->dev, DMA_BIT_MASK(32))))
@@ -173,8 +189,9 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
     if (intr & (HARDDOOM_INTR_FE_ERROR | HARDDOOM_INTR_FIFO_OVERFLOW | HARDDOOM_INTR_SURF_DST_OVERFLOW | HARDDOOM_INTR_SURF_SRC_OVERFLOW | HARDDOOM_INTR_PAGE_FAULT_SURF_DST | HARDDOOM_INTR_PAGE_FAULT_SURF_SRC | HARDDOOM_INTR_PAGE_FAULT_TEXTURE)) {
         pr_err("interrupt came: %x\n", intr);
         if (intr & HARDDOOM_INTR_FE_ERROR) {
-            pr_err("FE_ERROR_CODE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
-            pr_err("FE_ERROR_DATA: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CMD));
+            pr_err("FE_ERROR_CODE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
+            pr_err("FE_ERROR_DATA: %x\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CMD));
+            pr_err("XY_SURF_DIMS: %x\n", ioread32(doomdev->bar0 + HARDDOOM_XY_SURF_DIMS));
         }
 
         if (intr & HARDDOOM_INTR_PAGE_FAULT_TEXTURE) {
@@ -193,16 +210,20 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
     iowrite32(intr, doomdev->bar0 + HARDDOOM_INTR);
 
     if (intr & HARDDOOM_INTR_PONG_SYNC) {
-        spin_lock_irqsave(&doomdev->read_flag_spinlock, flags);
-        doomdev->read_flag = 1;
-        wake_up(&doomdev->read_sync_wait);
-        spin_unlock_irqrestore(&doomdev->read_flag_spinlock, flags);
+//        spin_lock_irqsave(&doomdev->read_flag_spinlock, flags);
+//        doomdev->read_flag = 1;
+//        wake_up(&doomdev->read_sync_wait);
+//        spin_unlock_irqrestore(&doomdev->read_flag_spinlock, flags);
+        complete(doomdev->ping_sync_event);
     }
 
     if (intr & HARDDOOM_INTR_PONG_ASYNC) {
         enabled_interrupts = ioread32(doomdev->bar0 + HARDDOOM_INTR_ENABLE);
         iowrite32(enabled_interrupts & (~HARDDOOM_INTR_PONG_ASYNC), doomdev->bar0 + HARDDOOM_INTR_ENABLE);
-        wake_up(&doomdev->pong_async_wait);
+        iowrite32(HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR);
+        if (doomdev->ping_async_event != NULL)
+            complete(doomdev->ping_async_event);
+//        wake_up(&doomdev->pong_async_wait);
     }
 
     if (intr & HARDDOOM_INTR_FE_ERROR) {

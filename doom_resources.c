@@ -68,6 +68,7 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
     frame->height = kernel_arg.height;
     frame->pages_count = roundup(kernel_arg.width * kernel_arg.height, HARDDOOM_PAGE_SIZE) / HARDDOOM_PAGE_SIZE;
     frame->page_table_size = roundup(frame->pages_count * sizeof(doom_dma_ptr_t), DOOMDEV_PT_ALIGN);
+//    frame->frame_rw_lock = RW_LOCK_UNLOCKED;
 
     // alloc page table:
     frame->pt_dma = dma_alloc_coherent(&doomdev->pdev->dev,
@@ -90,7 +91,7 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
             return -ENOMEM;
         }
         frame->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
-        pr_err("frame->pt_virt[%d]: %llx frame->pt_dma[%d] = %x\n", i, frame->pt_virt[i], i, frame->pt_dma[i]);
+//        pr_err("frame->pt_virt[%d]: %llx frame->pt_dma[%d] = %x\n", i, frame->pt_virt[i], i, frame->pt_dma[i]);
     }
     frame_fd = anon_inode_getfd("frame", &doom_frame_fops, frame, 0);
     if (IS_ERR_VALUE((unsigned long) frame_fd)) {
@@ -102,6 +103,8 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
     fput(created_file);
 
     wmb();
+
+    pr_err("created_frame!!!\n");
     return frame_fd;
 }
 
@@ -154,7 +157,7 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
             return -ENOMEM;
         }
         col_texture->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
-        pr_err("col_texture->pt_dma[%d] = %x\n", i, col_texture->pt_dma[i]);
+//        pr_err("col_texture->pt_dma[%d] = %x\n", i, col_texture->pt_dma[i]);
         to_copy = min((size_t) HARDDOOM_PAGE_SIZE, col_texture->texture_size - i * HARDDOOM_PAGE_SIZE);
         if (copy_from_user(col_texture->pt_virt[i] + i * HARDDOOM_PAGE_SIZE,
                            (void *) kernel_arg.data_ptr + i * HARDDOOM_PAGE_SIZE, to_copy)) {
@@ -246,16 +249,22 @@ long doom_frame_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     switch (cmd) {
     case DOOMDEV_SURF_IOCTL_COPY_RECTS:
+//        pr_err("IOCTL COPY RECTS\n");
         return doom_frame_copy_rects(file->private_data, (struct doomdev_surf_ioctl_copy_rects *) arg);
     case DOOMDEV_SURF_IOCTL_FILL_RECTS:
+//        pr_err("IOCTL FILL RECTS\n");
         return doom_frame_fill_rects(file->private_data, (struct doomdev_surf_ioctl_fill_rects *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_LINES:
+//        pr_err("IOCTL DRAW LINES\n");
         return doom_frame_draw_line(file->private_data, (struct doomdev_surf_ioctl_draw_lines *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_BACKGROUND:
+//        pr_err("IOCTL DRAW BACKGROUND\n");
         return doom_frame_draw_background(file->private_data, (struct doomdev_surf_ioctl_draw_background *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_COLUMNS:
+//        pr_err("IOCTL DRAW COLUMNS\n");
         return doom_frame_draw_columns(file->private_data, (struct doomdev_surf_ioctl_draw_columns *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_SPANS:
+//        pr_err("IOCTL DRAW SPANS\n");
         return doom_frame_draw_spans(file->private_data, (struct doomdev_surf_ioctl_draw_spans *) arg);
     default:
         return -EINVAL;
@@ -297,6 +306,8 @@ int doom_frame_release(struct inode *ino, struct file *filep)
     unsigned long spin_lock_flags;
 
     mutex_lock(&frame->context->dev->surface_lock);
+//    write_lock(frame->frame_rw_lock);
+
 
 //    send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
 //    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
@@ -317,7 +328,6 @@ int doom_frame_release(struct inode *ino, struct file *filep)
     dma_free_coherent(&frame->context->dev->pdev->dev, frame->page_table_size,
                       frame->pt_dma, frame->pt_dma_addr);
     kfree(frame->pt_virt);
-
     kfree(frame);
     // TODO : check for errors
     mutex_unlock(&frame->context->dev->surface_lock);
@@ -333,6 +343,7 @@ ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff
     uint32_t page_num = (*offp) / HARDDOOM_PAGE_SIZE;
     int to_copy;
     unsigned long spin_lock_flags;
+    struct completion ping_sync_event;
 
 //    pr_err("starting doom_frame_read!!!\n");
 
@@ -342,16 +353,24 @@ ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff
 
     frame = filp->private_data;
 
+//    write_lock(frame->frame_rw_lock);
+
     mutex_lock(&frame->context->dev->surface_lock);
+
+    init_completion(&ping_sync_event);
+    frame->context->dev->ping_sync_event = &ping_sync_event;
+
     send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
-    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
-    while (!frame->context->dev->read_flag) {
-        spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
-        wait_event_interruptible(frame->context->dev->read_sync_wait, frame->context->dev->read_flag > 0);
-        spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
-    }
-    frame->context->dev->read_flag = 0;
-    spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+    wait_for_completion(&ping_sync_event);
+
+//    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//    while (!frame->context->dev->read_flag) {
+//        spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//        wait_event_interruptible(frame->context->dev->read_sync_wait, frame->context->dev->read_flag > 0);
+//        spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+//    }
+//    frame->context->dev->read_flag = 0;
+//    spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
 
     while (copied < count) {
         to_copy = min(count - copied, (size_t) (HARDDOOM_PAGE_SIZE - ((*offp) % HARDDOOM_PAGE_SIZE)));
@@ -367,6 +386,7 @@ ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff
     }
 
     mutex_unlock(&frame->context->dev->surface_lock);
+//    write_unlock(frame->frame_rw_lock);
     return count;
 }
 
@@ -375,6 +395,15 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
     // TODO: PING_SYNC wait for completing everything
     int i;
     struct doom_col_texture *col_texture = filep->private_data;
+    struct completion ping_sync_event;
+
+    mutex_lock(&col_texture->context->dev->surface_lock);
+
+    init_completion(&ping_sync_event);
+    col_texture->context->dev->ping_sync_event = &ping_sync_event;
+
+    send_command(col_texture->context, HARDDOOM_CMD_PING_SYNC);
+    wait_for_completion(&ping_sync_event);
 
     for (i = 0; i < col_texture->pages_count; i++) {
         dma_free_coherent(&col_texture->context->dev->pdev->dev,
@@ -386,8 +415,11 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
                       col_texture->pt_dma, col_texture->pt_dma_addr);
     kfree(col_texture->pt_virt);
 
+    mutex_unlock(&col_texture->context->dev->surface_lock);
     kfree(col_texture);
     // TODO : check for errors
+
+
 
     return 0;
 
@@ -398,10 +430,23 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
 int doom_flat_texture_release(struct inode *ino, struct file *filep)
 {
     struct doom_flat_texture *texture = filep->private_data;
+    struct completion ping_sync_event;
+
+    mutex_lock(&texture->context->dev->surface_lock);
+
+    init_completion(&ping_sync_event);
+    texture->context->dev->ping_sync_event = &ping_sync_event;
+
+    send_command(texture->context, HARDDOOM_CMD_PING_SYNC);
+    wait_for_completion(&ping_sync_event);
+
     dma_free_coherent(&texture->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, texture->ptr_virt, texture->ptr_dma);
+
+    mutex_unlock(&texture->context->dev->surface_lock);
 
     kfree(texture);
     // TODO : check for errors
+
 
     return 0;
 }
@@ -409,11 +454,24 @@ int doom_flat_texture_release(struct inode *ino, struct file *filep)
 int doom_colormaps_release(struct inode *ino, struct file *filep)
 {
     struct doom_colormaps *colormaps = filep->private_data;
+    struct completion ping_sync_event;
+
+    mutex_lock(&colormaps->context->dev->surface_lock);
+
+    init_completion(&ping_sync_event);
+    colormaps->context->dev->ping_sync_event = &ping_sync_event;
+
+    send_command(colormaps->context, HARDDOOM_CMD_PING_SYNC);
+    wait_for_completion(&ping_sync_event);
+
     dma_free_coherent(&colormaps->context->dev->pdev->dev, colormaps->count * HARDDOOM_COLORMAP_SIZE,
                       colormaps->ptr_virt, colormaps->ptr_dma);
 
+    mutex_unlock(&colormaps->context->dev->surface_lock);
     kfree(colormaps);
     // TODO : check for errors
+
+
 
     return 0;
 }
@@ -438,6 +496,9 @@ int doom_frame_copy_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_co
         return -EINVAL;
     }
     src_frame = src_file->private_data;
+
+//    write_lock(src_frame->frame_rw_lock);
+//    read_lock(frame->frame_rw_lock);
 
     if (frame->width != src_frame->width || frame->height != src_frame->height)
         return -EINVAL;
@@ -595,9 +656,11 @@ int doom_frame_draw_background(struct doom_frame *frame, struct doomdev_surf_ioc
 
     texture = flat_file->private_data;
 
+//    pr_err("DRAW BCG: %x %x %x %x\n",frame->pt_dma_addr, frame->width, frame->height ,texture->ptr_dma);
+
     mutex_lock(&frame->context->dev->surface_lock);
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
     send_command(frame->context, HARDDOOM_CMD_SURF_DIMS(frame->width, frame->height));
+    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
     send_command(frame->context, HARDDOOM_CMD_FLAT_ADDR(texture->ptr_dma));
     send_command(frame->context, HARDDOOM_CMD_DRAW_BACKGROUND);
     mutex_unlock(&frame->context->dev->surface_lock);
