@@ -83,6 +83,8 @@ struct doom_col_texture {
 
     uint16_t height;
 
+    int is_page_table_on_last_page;
+
     void **pt_virt;
     doom_dma_ptr_t *pt_dma;
     doom_dma_ptr_t pt_dma_addr;

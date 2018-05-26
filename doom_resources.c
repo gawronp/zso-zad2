@@ -134,49 +134,62 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
     col_texture->pages_count = roundup(col_texture->rounded_texture_size, HARDDOOM_PAGE_SIZE) / HARDDOOM_PAGE_SIZE;
     col_texture->page_table_size = roundup(col_texture->pages_count * sizeof(doom_dma_ptr_t), DOOMDEV_PT_ALIGN);
 
-//    if (col_texture->page_table_size <= HARDDOOM_PAGE_SIZE - (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE)) {
-//        last_page_virt = dma_alloc_coherent(&doomdev->pdev->dev,
-//                                            (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE) + col_texture->page_table_size,
-//                                            &dma_addr,
-//                                            GFP_KERNEL);
-//        last_page_dma = (doom_dma_ptr_t) dma_addr;
-//        col_texture->pt_dma = last_page_virt + (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE);
-//        col_texture->pt_dma[col_texture->pages_count - 1] = last_page_dma;
-//        col_texture->pt_dma_addr = last_page_dma + (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE);
-//        col_texture->pt_virt = kmalloc(col_texture->pages_count * sizeof(doom_dma_ptr_t *), GFP_KERNEL);
-//        col_texture->pt_virt[col_texture->pages_count - 1] = last_page_virt;
-//
-//        // TODO - if unlikely
-//
-//        for (i = 0; i < col_texture->pages_count - 1; i++) {
-//            col_texture->pt_virt[i] =
-//                    dma_alloc_coherent(&doomdev->pdev->dev,
-//                                       min((size_t) HARDDOOM_PAGE_SIZE,
-//                                           (size_t) col_texture->rounded_texture_size - i * HARDDOOM_PAGE_SIZE),
-//                                       &dma_addr,
-//                                       GFP_KERNEL);
-//            if (unlikely(!dma_addr)) {
-//                pr_err("4\n");
-//                return -ENOMEM;
-//            }
-//            col_texture->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
-////        pr_err("col_texture->pt_dma[%d] = %x\n", i, col_texture->pt_dma[i]);
-//            to_copy = min((size_t) HARDDOOM_PAGE_SIZE, col_texture->texture_size - i * HARDDOOM_PAGE_SIZE);
-//            if (copy_from_user(col_texture->pt_virt[i],
-//                               (void *) kernel_arg.data_ptr + i * HARDDOOM_PAGE_SIZE,
-//                               to_copy)) {
-//                pr_err("TEXTURE - ERROR COPYING DATA FROM USER!\n");
-//                return -EFAULT;
-//            }
+    if ((0 < (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE))
+            && (col_texture->page_table_size <= HARDDOOM_PAGE_SIZE - (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE))) {
+        last_page_virt = dma_alloc_coherent(&doomdev->pdev->dev,
+                                            (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE) + col_texture->page_table_size,
+                                            &dma_addr,
+                                            GFP_KERNEL);
+        last_page_dma = (doom_dma_ptr_t) dma_addr;
+        col_texture->is_page_table_on_last_page = 1;
+        col_texture->pt_dma = last_page_virt + (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE);
+        col_texture->pt_dma[col_texture->pages_count - 1] = last_page_dma | HARDDOOM_PTE_VALID;
+        col_texture->pt_dma_addr = last_page_dma + (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE);
+        col_texture->pt_virt = kmalloc(col_texture->pages_count * sizeof(doom_dma_ptr_t *), GFP_KERNEL);
+        col_texture->pt_virt[col_texture->pages_count - 1] = last_page_virt;
+
+        // TODO - if unlikely
+
+        to_copy = min((size_t) HARDDOOM_PAGE_SIZE, col_texture->texture_size - (col_texture->pages_count - 1) * HARDDOOM_PAGE_SIZE);
+        if (copy_from_user(col_texture->pt_virt[col_texture->pages_count - 1],
+                           (void *) kernel_arg.data_ptr + (col_texture->pages_count - 1) * HARDDOOM_PAGE_SIZE,
+                           to_copy)) {
+            pr_err("TEXTURE - ERROR COPYING DATA FROM USER!\n");
+            return -EFAULT;
+        }
+
+        for (i = 0; i < col_texture->pages_count - 1; i++) {
+            col_texture->pt_virt[i] =
+                    dma_alloc_coherent(&doomdev->pdev->dev,
+                                       HARDDOOM_PAGE_SIZE,
+                                       &dma_addr,
+                                       GFP_KERNEL);
+            if (unlikely(!dma_addr)) {
+                pr_err("4\n");
+                return -ENOMEM;
+            }
+            col_texture->pt_dma[i] = (doom_dma_ptr_t) dma_addr | HARDDOOM_PTE_VALID;
+//        pr_err("col_texture->pt_dma[%d] = %x\n", i, col_texture->pt_dma[i]);
+            to_copy = min((size_t) HARDDOOM_PAGE_SIZE, col_texture->texture_size - i * HARDDOOM_PAGE_SIZE);
+            if (copy_from_user(col_texture->pt_virt[i],
+                               (void *) kernel_arg.data_ptr + i * HARDDOOM_PAGE_SIZE,
+                               to_copy)) {
+                pr_err("TEXTURE - ERROR COPYING DATA FROM USER!\n");
+                return -EFAULT;
+            }
+        }
+//        pr_err("PAGES: %d TEXTURE_SIZE: %x ROUNDED TEXTURE SIZE: %x \n", col_texture->pages_count, col_texture->texture_size, col_texture->rounded_texture_size);
+//        for (i = 0; i < col_texture->pages_count; i++) {
+//            pr_err("PAGE %d ADDR: %x\n", i, col_texture->pt_dma[i]);
 //        }
-//
-//    } else {
+    } else {
         col_texture->pt_dma = dma_alloc_coherent(&doomdev->pdev->dev,
                                                  col_texture->page_table_size,
                                                  &dma_addr,
                                                  GFP_KERNEL);
         col_texture->pt_dma_addr = (doom_dma_ptr_t) dma_addr;
         col_texture->pt_virt = kmalloc(col_texture->pages_count * sizeof(doom_dma_ptr_t *), GFP_KERNEL);
+        col_texture->is_page_table_on_last_page = 0;
 
         if (unlikely(!col_texture->pt_dma || !col_texture->pt_dma_addr || !col_texture->pt_virt)) {
             pr_err("3\n");
@@ -186,8 +199,7 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
         for (i = 0; i < col_texture->pages_count; i++) {
             col_texture->pt_virt[i] =
                     dma_alloc_coherent(&doomdev->pdev->dev,
-                                       min((size_t) HARDDOOM_PAGE_SIZE,
-                                           (size_t) col_texture->rounded_texture_size - i * HARDDOOM_PAGE_SIZE),
+                                       HARDDOOM_PAGE_SIZE,
                                        &dma_addr,
                                        GFP_KERNEL);
             if (unlikely(!dma_addr)) {
@@ -203,14 +215,14 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
                 return -EFAULT;
             }
         }
-//    }
-
-    if (col_texture->texture_size != col_texture->rounded_texture_size) {
-        // fill with zeros
-        memset(col_texture->pt_virt[col_texture->pages_count - 1] + col_texture->texture_size % HARDDOOM_PAGE_SIZE,
-               0,
-               col_texture->rounded_texture_size - col_texture->texture_size);
     }
+
+//    if (col_texture->texture_size != col_texture->rounded_texture_size) {
+//        // fill with zeros
+//        memset(col_texture->pt_virt[col_texture->pages_count - 1] + col_texture->texture_size % HARDDOOM_PAGE_SIZE,
+//               0,
+//               col_texture->rounded_texture_size - col_texture->texture_size);
+//    }
     col_texture_fd = anon_inode_getfd("col_texture", &doom_col_texture_fops, col_texture, 0);
     if (IS_ERR_VALUE((unsigned long) col_texture_fd)) {
         pr_err("anon inode getfd return err %d\n", col_texture_fd);
@@ -443,15 +455,16 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
 //        try_wait_for_completion(&ping_sync_event);
     wait_for_completion(ping_sync_event);
 
-
     for (i = 0; i < col_texture->pages_count; i++) {
         dma_free_coherent(&col_texture->context->dev->pdev->dev,
-                          min((size_t) HARDDOOM_PAGE_SIZE, col_texture->rounded_texture_size - i * HARDDOOM_PAGE_SIZE),
+                          HARDDOOM_PAGE_SIZE,
                           col_texture->pt_virt[i],
                           col_texture->pt_dma[i]);
     }
-    dma_free_coherent(&col_texture->context->dev->pdev->dev, col_texture->page_table_size,
-                      col_texture->pt_dma, col_texture->pt_dma_addr);
+    if (!col_texture->is_page_table_on_last_page)
+        dma_free_coherent(&col_texture->context->dev->pdev->dev, col_texture->page_table_size,
+                          col_texture->pt_dma, col_texture->pt_dma_addr);
+
     kfree(col_texture->pt_virt);
 
     mutex_unlock(&col_texture->context->dev->surface_lock);

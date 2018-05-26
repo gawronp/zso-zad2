@@ -3,6 +3,7 @@
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 
 #include "doom_commands.h"
 
@@ -110,7 +111,7 @@ void send_command(struct doom_context *context, doom_command_t comm)
 
 
     unsigned long flags;
-    struct completion ping_async_event;
+    struct completion *ping_async_event;
     doom_command_t to_enable;
 
 //    pr_err("Putting command: %x read: %x write: %x dma_addr: %x\n", comm,
@@ -127,16 +128,18 @@ void send_command(struct doom_context *context, doom_command_t comm)
     }
 
     if (get_free_buff_size(context) <= DOOM_BUFFER_CRIT_LOW_SIZE) {
-        init_completion(&ping_async_event);
+        ping_async_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
+        init_completion(ping_async_event);
         // TODO
         iowrite32(HARDDOOM_INTR_PONG_ASYNC, context->dev->bar0 + HARDDOOM_INTR);
         if (get_free_buff_size(context) <+ DOOM_BUFFER_CRIT_LOW_SIZE) {
-            context->dev->ping_async_event = &ping_async_event;
+            context->dev->ping_async_event = ping_async_event;
             iowrite32(HARDDOOM_INTR_PONG_ASYNC, context->dev->bar0 + HARDDOOM_INTR_ENABLE);
 //            while(!completion_done(&ping_async_event))
 //                try_wait_for_completion(&ping_async_event);
-            wait_for_completion(&ping_async_event);
+            wait_for_completion(ping_async_event);
         }
+        kfree(ping_async_event);
     }
 
     context->dev->buffer[context->dev->doom_buffer_pos_write] = comm;
