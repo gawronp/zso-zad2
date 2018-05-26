@@ -160,6 +160,7 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
         to_copy = min((size_t) HARDDOOM_PAGE_SIZE, col_texture->texture_size - i * HARDDOOM_PAGE_SIZE);
         if (copy_from_user(col_texture->pt_virt[i] + i * HARDDOOM_PAGE_SIZE,
                            (void *) kernel_arg.data_ptr + i * HARDDOOM_PAGE_SIZE, to_copy)) {
+            pr_err("TEXTURE - ERROR COPYING DATA FROM USER!\n");
             return -EFAULT;
         }
     }
@@ -200,6 +201,7 @@ int create_flat_texture(struct doom_context * context, struct doomdev_ioctl_crea
     texture->ptr_dma = dma_addr;
 
     if(copy_from_user(texture->ptr_virt, (void *) kernel_arg.data_ptr, HARDDOOM_FLAT_SIZE)) {
+        pr_err("FLAT - ERROR COPYING DATA FROM USER!\n");
         return -EFAULT;
     }
     // TODO check for errors
@@ -234,6 +236,7 @@ int create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_c
 
     if (copy_from_user(colormaps->ptr_virt, (void *) kernel_arg.data_ptr,
                        colormaps->count * HARDDOOM_COLORMAP_SIZE)) {
+        pr_err("COLOR - ERROR COPYING DATA FROM USER!\n");
         return -EFAULT;
     }
     // TODO check for errors
@@ -276,18 +279,21 @@ int doom_frame_release(struct inode *ino, struct file *filep)
     int i;
     struct doom_frame *frame = filep->private_data;
     unsigned long spin_lock_flags;
-    struct completion ping_sync_event;
+    struct completion *ping_sync_event;
+
+    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
+    init_completion(ping_sync_event);
 
     mutex_lock(&frame->context->dev->surface_lock);
-//    write_lock(frame->frame_rw_lock);
 
-    init_completion(&ping_sync_event);
-    frame->context->dev->ping_sync_event = &ping_sync_event;
-
+    frame->context->dev->ping_sync_event = ping_sync_event;
     send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
 //    while(!completion_done(&ping_sync_event))
 //        try_wait_for_completion(&ping_sync_event);
-    wait_for_completion(&ping_sync_event);
+    wait_for_completion(ping_sync_event);
+
+//    write_lock(frame->frame_rw_lock);
+
 
 //    send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
 //    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
@@ -308,9 +314,11 @@ int doom_frame_release(struct inode *ino, struct file *filep)
     dma_free_coherent(&frame->context->dev->pdev->dev, frame->page_table_size,
                       frame->pt_dma, frame->pt_dma_addr);
     kfree(frame->pt_virt);
-    kfree(frame);
     // TODO : check for errors
     mutex_unlock(&frame->context->dev->surface_lock);
+
+    kfree(frame);
+    kfree(ping_sync_event);
 
     return 0;
 }
@@ -323,7 +331,7 @@ ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff
     uint32_t page_num = (*offp) / HARDDOOM_PAGE_SIZE;
     int to_copy;
     unsigned long spin_lock_flags;
-    struct completion ping_sync_event;
+    struct completion *ping_sync_event;
 
 //    pr_err("starting doom_frame_read!!!\n");
 
@@ -334,18 +342,20 @@ ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff
     frame = filp->private_data;
 
 //    write_lock(frame->frame_rw_lock);
+    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
 
+    init_completion(ping_sync_event);
     mutex_lock(&frame->context->dev->surface_lock);
 
-    init_completion(&ping_sync_event);
-    frame->context->dev->ping_sync_event = &ping_sync_event;
+//    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
+
+    frame->context->dev->ping_sync_event = ping_sync_event;
 
     send_command(frame->context, HARDDOOM_CMD_PING_SYNC);
 //    while(!completion_done(&ping_sync_event))
 //        try_wait_for_completion(&ping_sync_event);
-    wait_for_completion(&ping_sync_event);
+    wait_for_completion(ping_sync_event);
 
-//    spin_lock_irqsave(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
 //    while (!frame->context->dev->read_flag) {
 //        spin_unlock_irqrestore(&frame->context->dev->read_flag_spinlock, spin_lock_flags);
 //        wait_event_interruptible(frame->context->dev->read_sync_wait, frame->context->dev->read_flag > 0);
@@ -368,6 +378,8 @@ ssize_t doom_frame_read(struct file *filp, char __user *buff, size_t count, loff
     }
 
     mutex_unlock(&frame->context->dev->surface_lock);
+
+    kfree(ping_sync_event);
 //    write_unlock(frame->frame_rw_lock);
     return count;
 }
@@ -377,17 +389,19 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
     // TODO: PING_SYNC wait for completing everything
     int i;
     struct doom_col_texture *col_texture = filep->private_data;
-    struct completion ping_sync_event;
+    struct completion *ping_sync_event;
+
+    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
+    init_completion(ping_sync_event);
 
     mutex_lock(&col_texture->context->dev->surface_lock);
 
-    init_completion(&ping_sync_event);
-    col_texture->context->dev->ping_sync_event = &ping_sync_event;
-
+    col_texture->context->dev->ping_sync_event = ping_sync_event;
     send_command(col_texture->context, HARDDOOM_CMD_PING_SYNC);
 //    while(!completion_done(&ping_sync_event))
 //        try_wait_for_completion(&ping_sync_event);
-    wait_for_completion(&ping_sync_event);
+    wait_for_completion(ping_sync_event);
+
 
     for (i = 0; i < col_texture->pages_count; i++) {
         dma_free_coherent(&col_texture->context->dev->pdev->dev,
@@ -400,13 +414,10 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
     kfree(col_texture->pt_virt);
 
     mutex_unlock(&col_texture->context->dev->surface_lock);
+
     kfree(col_texture);
+    kfree(ping_sync_event);
     // TODO : check for errors
-
-
-
-    return 0;
-
 
     return 0;
 }
@@ -414,25 +425,28 @@ int doom_col_texture_release(struct inode *ino, struct file *filep)
 int doom_flat_texture_release(struct inode *ino, struct file *filep)
 {
     struct doom_flat_texture *texture = filep->private_data;
-    struct completion ping_sync_event;
+    struct completion *ping_sync_event;
+
+    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
+
+    init_completion(ping_sync_event);
 
     mutex_lock(&texture->context->dev->surface_lock);
 
-    init_completion(&ping_sync_event);
-    texture->context->dev->ping_sync_event = &ping_sync_event;
-
+    texture->context->dev->ping_sync_event = ping_sync_event;
     send_command(texture->context, HARDDOOM_CMD_PING_SYNC);
 //    while(!completion_done(&ping_sync_event))
 //        try_wait_for_completion(&ping_sync_event);
-    wait_for_completion(&ping_sync_event);
+    wait_for_completion(ping_sync_event);
+
 
     dma_free_coherent(&texture->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, texture->ptr_virt, texture->ptr_dma);
 
     mutex_unlock(&texture->context->dev->surface_lock);
 
     kfree(texture);
+    kfree(ping_sync_event);
     // TODO : check for errors
-
 
     return 0;
 }
@@ -440,26 +454,28 @@ int doom_flat_texture_release(struct inode *ino, struct file *filep)
 int doom_colormaps_release(struct inode *ino, struct file *filep)
 {
     struct doom_colormaps *colormaps = filep->private_data;
-    struct completion ping_sync_event;
+    struct completion *ping_sync_event;
+
+    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
+
+    init_completion(ping_sync_event);
 
     mutex_lock(&colormaps->context->dev->surface_lock);
 
-    init_completion(&ping_sync_event);
-    colormaps->context->dev->ping_sync_event = &ping_sync_event;
-
+    colormaps->context->dev->ping_sync_event = ping_sync_event;
     send_command(colormaps->context, HARDDOOM_CMD_PING_SYNC);
 //    while(!completion_done(&ping_sync_event))
 //        try_wait_for_completion(&ping_sync_event);
-    wait_for_completion(&ping_sync_event);
+    wait_for_completion(ping_sync_event);
 
     dma_free_coherent(&colormaps->context->dev->pdev->dev, colormaps->count * HARDDOOM_COLORMAP_SIZE,
                       colormaps->ptr_virt, colormaps->ptr_dma);
 
     mutex_unlock(&colormaps->context->dev->surface_lock);
+
     kfree(colormaps);
+    kfree(ping_sync_event);
     // TODO : check for errors
-
-
 
     return 0;
 }
@@ -667,10 +683,11 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
     void *ptr;
     struct doomdev_column *kern_ptr;
     struct file *help_file = NULL;
+    struct file *texture_file = NULL;
     struct file *colormap_file = NULL;
     struct doom_col_texture *texture;
     struct doom_colormaps *colormaps_color = NULL;
-    struct doom_colormaps *colormaps_transl;
+    struct doom_colormaps *colormaps_transl = NULL;
 
 //    copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_draw_columns));
 //    ptr = (void *) kernel_arg.columns_ptr;
@@ -738,15 +755,17 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
     copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_draw_columns));
     ptr = (void *) kernel_arg.columns_ptr;
     kern_ptr = kmalloc(kernel_arg.columns_num * sizeof(struct doomdev_column), GFP_KERNEL);
-    copy_from_user(kern_ptr, ptr, kernel_arg.columns_num * sizeof(struct doomdev_column));
+    if (copy_from_user(kern_ptr, ptr, kernel_arg.columns_num * sizeof(struct doomdev_column))) {
+        pr_err("COLOR DRAW - ERROR COPYING DATA FROM USER!\n");
+    }
 
     mutex_lock(&frame->context->dev->surface_lock);
+    kernel_arg.draw_flags = kernel_arg.draw_flags ^ DOOMDEV_DRAW_FLAGS_TRANSLATE;
     send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
     if (!(kernel_arg.draw_flags & DOOMDEV_DRAW_FLAGS_FUZZ)) {
-        help_file = fget(kernel_arg.texture_fd);
+        texture_file = fget(kernel_arg.texture_fd);
         // TODO check for errors
-        texture = help_file->private_data;
-        fput(help_file);
+        texture = texture_file->private_data;
         send_command(frame->context, HARDDOOM_CMD_TEXTURE_PT(texture->pt_dma_addr));
         send_command(frame->context, HARDDOOM_CMD_TEXTURE_DIMS(texture->rounded_texture_size, texture->height));
     }
@@ -786,7 +805,15 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
             send_command(frame->context,
                          HARDDOOM_CMD_COLORMAP_ADDR(colormaps_color->ptr_dma
                                                     + kern_ptr[i].colormap_idx * HARDDOOM_COLORMAP_SIZE));
+//            pr_err("COLOR COL: %d COLORMAP_SIZE: %d COLOR: %d ROUNDED TEXTURE_SIZE: %d TEXTURE_SIZE: %d TEXTURE_OFFSET: %d\n",
+//                   i, colormaps_color->count, kern_ptr[i].colormap_idx,
+//                   texture->rounded_texture_size, texture->rounded_texture_size, kern_ptr[i].texture_offset);
         }
+//        if (colormaps_transl != NULL) {
+//            pr_err("TRANSL COL: %d COLORMAP_SIZE: %d COLOR: %d ROUNDED TEXTURE_SIZE: %d TEXTURE_SIZE: %d TEXTURE_OFFSET: %d\n",
+//                   i, colormaps_transl->count, kernel_arg.translation_idx,
+//                   texture->rounded_texture_size, texture->rounded_texture_size, kern_ptr[i].texture_offset);
+//        }
         if (!(kernel_arg.draw_flags & DOOMDEV_DRAW_FLAGS_FUZZ)) {
             send_command(frame->context, HARDDOOM_CMD_USTART(kern_ptr[i].ustart));
             send_command(frame->context, HARDDOOM_CMD_USTEP(kern_ptr[i].ustep));
@@ -798,6 +825,8 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
     mutex_unlock(&frame->context->dev->surface_lock);
     if (colormap_file != NULL)
         fput(colormap_file);
+    if (texture_file != NULL)
+        fput(texture_file);
     kfree(kern_ptr);
 
     return kernel_arg.columns_num;
@@ -877,7 +906,10 @@ int doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_dr
 
     ptr = (void *) kernel_arg.spans_ptr;
     kern_ptr = kmalloc(kernel_arg.spans_num * sizeof(struct doomdev_span), GFP_KERNEL);
-    copy_from_user(kern_ptr, ptr, kernel_arg.spans_num * sizeof(struct doomdev_span));
+    if (copy_from_user(kern_ptr, ptr, kernel_arg.spans_num * sizeof(struct doomdev_span))) {
+        pr_err("COLOR - ERROR COPYING DATA FROM USER!\n");
+    }
+    kernel_arg.draw_flags = kernel_arg.draw_flags ^ DOOMDEV_DRAW_FLAGS_TRANSLATE;
 
     mutex_lock(&frame->context->dev->surface_lock);
     send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
