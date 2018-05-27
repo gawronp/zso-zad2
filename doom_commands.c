@@ -37,7 +37,7 @@ void flush_batch(struct doom_context *context) {
         return;
     }
 
-    if (context->dev->commands_sent_since_last_ping_async >= DOOM_BUFFER_SIZE / 4) {
+    if (context->dev->commands_sent_since_last_ping_async >= DOOM_ASYNC_FREQ) {
         context->dev->buffer[context->dev->doom_buffer_pos_write] = HARDDOOM_CMD_PING_ASYNC;
         context->dev->doom_buffer_pos_write += 1;
         context->dev->commands_space_left -= 1;
@@ -69,9 +69,9 @@ void flush_batch(struct doom_context *context) {
 //                    break;
 //            }
 
-            while(get_free_buff_size(context) < DOOM_BUFFER_SIZE / 4) {
+            while(get_free_buff_size(context) < DOOM_ASYNC_FREQ) {
                 wait_event_interruptible(context->dev->pong_async_wait,
-                                         get_free_buff_size(context) >= DOOM_BUFFER_SIZE / 4);
+                                         get_free_buff_size(context) >= DOOM_ASYNC_FREQ);
             }
 
 //            kfree(ping_async_event);

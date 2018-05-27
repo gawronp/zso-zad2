@@ -22,7 +22,8 @@
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
 
-#define DOOM_BUFFER_SIZE (64 * 4096)
+#define DOOM_BUFFER_SIZE (16 * 4096)
+#define DOOM_ASYNC_FREQ (DOOM_BUFFER_SIZE / 16)
 #define BATCH_SIZE 0x100
 
 #define DOOM_BUFFER_CRIT_LOW_SIZE (BATCH_SIZE + 5)
@@ -60,8 +61,8 @@ struct doom_device {
 
     void __iomem *bar0;
 
-    int fence_last;
-    atomic_t op_counter;
+    uint64_t fence_last;
+    atomic64_t op_counter;
     spinlock_t fence_spinlock;
     wait_queue_head_t fence_waitqueue;
     struct tasklet_struct tasklet_fence;

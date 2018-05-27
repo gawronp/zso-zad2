@@ -147,14 +147,14 @@ static void doom_tasklet_fence(unsigned long _doom_device) {
     unsigned long flags;
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
 
-    spin_lock_irqsave(&doomdev->fence_spinlock, flags);
+    spin_lock_bh(&doomdev->fence_spinlock);
 
 //    doomdev->fence_last = ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST);
 //    iowrite32(doomdev->fence_last + 1, doomdev->bar0 + HARDDOOM_FENCE_WAIT);
 
     // CODE GOES HERE
     wake_up_all(&doomdev->fence_waitqueue);
-    spin_unlock_irqrestore(&doomdev->fence_spinlock, flags);
+    spin_unlock_bh(&doomdev->fence_spinlock);
 
     pr_err("FENCE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST));
 }
@@ -190,7 +190,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 //    atomic_set(&doomdev->commands_space_left, DOOM_BUFFER_SIZE);
     doomdev->batch_size = 0;
 
-    atomic_set(&doomdev->op_counter, 0);
+    atomic64_set(&doomdev->op_counter, 0);
     init_waitqueue_head(&doomdev->fence_waitqueue);
     doomdev->fence_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->fence_spinlock);
 

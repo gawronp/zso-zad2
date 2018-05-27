@@ -55,15 +55,21 @@ static void wait_for_ping_sync_event(struct doom_context * context) {
     kfree(ping_sync_event);
 }
 
-static void wait_for_fence(struct doom_context * context, int fence_num) {
+static int is_fence_ready(struct doom_context * context, uint64_t fence_num) {
+    int fence_last = ioread32(context->dev->bar0 + HARDDOOM_FENCE_LAST);
+
+    return fence_num <= fence_last && (fence_last - fence_num  < HARDDOOM_FENCE_MASK / 2);
+}
+
+static void wait_for_fence(struct doom_context * context, uint64_t fence_num) {
     unsigned long flags;
 
     spin_lock_irqsave(&context->dev->fence_spinlock, flags);
-    while(fence_num > ioread32(context->dev->bar0 + HARDDOOM_FENCE_LAST)) {
+    while(!is_fence_ready(context, fence_num)) {
         iowrite32(fence_num, context->dev->bar0 + HARDDOOM_FENCE_WAIT);
         spin_unlock_irqrestore(&context->dev->fence_spinlock, flags);
         wait_event_interruptible(context->dev->fence_waitqueue,
-                                 fence_num <= ioread32(context->dev->bar0 + HARDDOOM_FENCE_LAST));
+                                 is_fence_ready(context, fence_num));
         spin_lock_irqsave(&context->dev->fence_spinlock, flags);
     }
     spin_unlock_irqrestore(&context->dev->fence_spinlock, flags);
@@ -100,7 +106,7 @@ int create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_crea
 
     frame = kmalloc(sizeof(struct doom_frame), GFP_KERNEL);
     frame->last_fence_spinlock = __SPIN_LOCK_UNLOCKED(frame->last_fence_spinlock);
-    frame->last_fence = atomic_read(&context->dev->op_counter);
+    frame->last_fence = atomic64_read(&context->dev->op_counter);
     frame->context = context;
     frame->width = kernel_arg.width;
     frame->height = kernel_arg.height;
@@ -165,7 +171,7 @@ int create_column_texture(struct doom_context * context, struct doomdev_ioctl_cr
 
     col_texture = kmalloc(sizeof(struct doom_col_texture), GFP_KERNEL);
     col_texture->last_fence_spinlock = __SPIN_LOCK_UNLOCKED(col_texture->last_fence_spinlock);
-    col_texture->last_fence = atomic_read(&context->dev->op_counter);
+    col_texture->last_fence = atomic64_read(&context->dev->op_counter);
     col_texture->context = context;
     col_texture->height = kernel_arg.height;
     col_texture->texture_size = kernel_arg.size;
@@ -278,7 +284,7 @@ int create_flat_texture(struct doom_context * context, struct doomdev_ioctl_crea
 
     texture = kmalloc(sizeof(struct doom_flat_texture), GFP_KERNEL);
     texture->last_fence_spinlock = __SPIN_LOCK_UNLOCKED(texture->last_fence_spinlock);
-    texture->last_fence = atomic_read(&context->dev->op_counter);
+    texture->last_fence = atomic64_read(&context->dev->op_counter);
     texture->context = context;
 
     texture->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_FLAT_SIZE,
@@ -313,7 +319,7 @@ int create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_c
 
     colormaps = kmalloc(sizeof(struct doom_colormaps), GFP_KERNEL);
     colormaps->last_fence_spinlock = __SPIN_LOCK_UNLOCKED(colormaps->last_fence_spinlock);
-    colormaps->last_fence = atomic_read(&context->dev->op_counter);
+    colormaps->last_fence = atomic64_read(&context->dev->op_counter);
     colormaps->context = context;
     colormaps->count = kernel_arg.num;
 
@@ -647,10 +653,10 @@ int doom_frame_copy_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_co
 //    pr_err("FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
 
 
-    fence_num = atomic_add_return(1, &frame->context->dev->op_counter);
+    fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
     src_frame->last_fence = fence_num;
-    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num));
+    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num & HARDDOOM_FENCE_MASK));
 //    pr_err("COPYR: %d\n", fence_num);
     fput(src_file);
     flush_batch(frame->context);
@@ -699,9 +705,9 @@ int doom_frame_fill_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_fi
     }
 //    pr_err("FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
 
-    fence_num = atomic_add_return(1, &frame->context->dev->op_counter);
+    fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
-    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num));
+    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num & HARDDOOM_FENCE_MASK));
 //    pr_err("FILLR: %d\n", fence_num);
     flush_batch(frame->context);
     mutex_unlock(&frame->context->dev->surface_lock);
@@ -753,9 +759,9 @@ int doom_frame_draw_line(struct doom_frame *frame, struct doomdev_surf_ioctl_dra
         send_command(frame->context, HARDDOOM_CMD_DRAW_LINE);
     }
 //    pr_err("FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
-    fence_num = atomic_add_return(1, &frame->context->dev->op_counter);
+    fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
-    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num));
+    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num & HARDDOOM_FENCE_MASK));
 //    pr_err("DRAWLN: %d\n", fence_num);
     flush_batch(frame->context);
     mutex_unlock(&frame->context->dev->surface_lock);
@@ -788,10 +794,10 @@ int doom_frame_draw_background(struct doom_frame *frame, struct doomdev_surf_ioc
     send_command(frame->context, HARDDOOM_CMD_FLAT_ADDR(texture->ptr_dma));
     send_command(frame->context, HARDDOOM_CMD_DRAW_BACKGROUND);
 
-    fence_num = atomic_add_return(1, &frame->context->dev->op_counter);
+    fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
     texture->last_fence = fence_num;
-    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num));
+    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num & HARDDOOM_FENCE_MASK));
 //    pr_err("DRAWBG: %d\n", fence_num);
     flush_batch(frame->context);
     mutex_unlock(&frame->context->dev->surface_lock);
@@ -889,7 +895,7 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
     }
 
     mutex_lock(&frame->context->dev->surface_lock);
-    fence_num = atomic_add_return(1, &frame->context->dev->op_counter);
+    fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
 //    kernel_arg.draw_flags = kernel_arg.draw_flags ^ DOOMDEV_DRAW_FLAGS_TRANSLATE;
     send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
@@ -956,7 +962,7 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
 //        prev_column = current_collumn;
     }
 //    pr_err("COLUMN FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
-    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num));
+    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num & HARDDOOM_FENCE_MASK));
 //    pr_err("COLUMNS: %d\n", fence_num);
     flush_batch(frame->context);
     mutex_unlock(&frame->context->dev->surface_lock);
@@ -1051,7 +1057,7 @@ int doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_dr
 
     mutex_lock(&frame->context->dev->surface_lock);
 
-    fence_num = atomic_add_return(1, &frame->context->dev->op_counter);
+    fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
 
     send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
@@ -1110,7 +1116,7 @@ int doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_dr
 //        prev_span = current_span;
     }
 //    pr_err("SPAN FIFO free: %d\n", ioread32(frame->context->dev->bar0 + HARDDOOM_FIFO_FREE));
-    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num));
+    send_command(frame->context, HARDDOOM_CMD_FENCE(fence_num & HARDDOOM_FENCE_MASK));
 //    pr_err("SPANS: %d\n", fence_num);
     flush_batch(frame->context);
 
