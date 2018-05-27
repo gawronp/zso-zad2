@@ -117,8 +117,6 @@ static void doom_tasklet_ping_sync(unsigned long _doom_device) {
 
     spin_lock_irqsave(&doomdev->tasklet_spinlock, flags);
 
-    // CODE GOES HERE
-
     if (doomdev->ping_sync_event != NULL) {
         complete(doomdev->ping_sync_event);
         doomdev->ping_sync_event = NULL;
@@ -128,18 +126,10 @@ static void doom_tasklet_ping_sync(unsigned long _doom_device) {
 }
 
 static void doom_tasklet_ping_async(unsigned long _doom_device) {
-    unsigned long flags;
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
 
     spin_lock_bh(&doomdev->tasklet_spinlock);
-
-    // CODE GOES HERE
-//    if (doomdev->ping_async_event != NULL) {
-//        complete(doomdev->ping_async_event);
-//        doomdev->ping_async_event = NULL;
-//    }
     wake_up_all(&doomdev->pong_async_wait);
-
     spin_unlock_bh(&doomdev->tasklet_spinlock);
 }
 
@@ -186,9 +176,9 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     doomdev->read_flag = 0;
     doomdev->commands_sent_since_last_ping_async = 0;
     doomdev->commands_space_left = DOOM_BUFFER_SIZE;
-//    atomic_set(&doomdev->commands_sent_since_last_ping_async, 0);
-//    atomic_set(&doomdev->commands_space_left, DOOM_BUFFER_SIZE);
     doomdev->batch_size = 0;
+    doomdev->last_dst_frame = 0;
+    doomdev->last_src_frame = 0;
 
     atomic64_set(&doomdev->op_counter, 0);
     init_waitqueue_head(&doomdev->fence_waitqueue);

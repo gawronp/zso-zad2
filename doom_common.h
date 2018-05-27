@@ -22,7 +22,7 @@
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
 
-#define DOOM_BUFFER_SIZE (16 * 4096)
+#define DOOM_BUFFER_SIZE 0x10000
 #define DOOM_ASYNC_FREQ (DOOM_BUFFER_SIZE / 16)
 #define BATCH_SIZE 0x100
 
@@ -49,9 +49,7 @@ struct doom_device {
     wait_queue_head_t pong_async_wait;
 
     spinlock_t tasklet_spinlock;
-    struct tasklet_struct tasklet_ping_sync;
     struct tasklet_struct tasklet_ping_async;
-    struct completion *ping_sync_event;
     struct completion *ping_async_event;
 
     doom_command_t *buffer;
@@ -75,6 +73,9 @@ struct doom_device {
 
     int commands_sent_since_last_ping_async;
     int commands_space_left;
+
+    doom_dma_ptr_t last_dst_frame;
+    doom_dma_ptr_t last_src_frame;
 };
 
 struct doom_context {
