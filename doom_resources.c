@@ -32,28 +32,28 @@ struct file_operations doom_colormaps_fops = {
         .release = doom_colormaps_release,
 };
 
-static void wait_for_ping_sync_event(struct doom_context * context) {
-    unsigned long flags;
-    struct completion *ping_sync_event;
-
-    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
-
-    spin_lock_irqsave(&context->dev->tasklet_spinlock, flags);
-    init_completion(ping_sync_event);
-    context->dev->ping_sync_event = ping_sync_event;
-    spin_unlock_irqrestore(&context->dev->tasklet_spinlock, flags);
-    send_command(context, HARDDOOM_CMD_PING_SYNC);
-    flush_batch(context);
-//    while(wait_for_completion_interruptible(ping_sync_event) != 0) {
-//        if (completion_done(ping_sync_event))
-//            break;
-//    }
-//    while(!completion_done(ping_sync_event))
-//        try_wait_for_completion(ping_sync_event);
-    wait_for_completion(ping_sync_event);
-
-    kfree(ping_sync_event);
-}
+//static void wait_for_ping_sync_event(struct doom_context * context) {
+//    unsigned long flags;
+//    struct completion *ping_sync_event;
+//
+//    ping_sync_event = kmalloc(sizeof(struct completion), GFP_KERNEL);
+//
+//    spin_lock_irqsave(&context->dev->tasklet_spinlock, flags);
+//    init_completion(ping_sync_event);
+//    context->dev->ping_sync_event = ping_sync_event;
+//    spin_unlock_irqrestore(&context->dev->tasklet_spinlock, flags);
+//    send_command(context, HARDDOOM_CMD_PING_SYNC);
+//    flush_batch(context);
+////    while(wait_for_completion_interruptible(ping_sync_event) != 0) {
+////        if (completion_done(ping_sync_event))
+////            break;
+////    }
+////    while(!completion_done(ping_sync_event))
+////        try_wait_for_completion(ping_sync_event);
+//    wait_for_completion(ping_sync_event);
+//
+//    kfree(ping_sync_event);
+//}
 
 static int is_fence_ready(struct doom_context * context, uint64_t fence_num) {
     int fence_last = ioread32(context->dev->bar0 + HARDDOOM_FENCE_LAST);
@@ -614,8 +614,14 @@ int doom_frame_copy_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_co
 
     mutex_lock(&frame->context->dev->surface_lock);
     send_command(frame->context, HARDDOOM_CMD_INTERLOCK);
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
-    send_command(frame->context, HARDDOOM_CMD_SURF_SRC_PT(src_frame->pt_dma_addr));
+    if (frame->context->dev->last_dst_frame != frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+        frame->context->dev->last_dst_frame = frame->pt_dma_addr;
+    }
+    if (frame->context->dev->last_src_frame != src_frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_SRC_PT(src_frame->pt_dma_addr));
+        frame->context->dev->last_src_frame = src_frame->pt_dma_addr;
+    }
     send_command(frame->context, HARDDOOM_CMD_SURF_DIMS(frame->width, frame->height));
     for (i = 0; i < kernel_arg.rects_num; i++) {
         if (copy_from_user(&current_copy, ptr, sizeof(struct doomdev_copy_rect))) {
@@ -677,7 +683,10 @@ int doom_frame_fill_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_fi
     ptr = (void *) kernel_arg.rects_ptr;
 
     mutex_lock(&frame->context->dev->surface_lock);
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+    if (frame->context->dev->last_dst_frame != frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+        frame->context->dev->last_dst_frame = frame->pt_dma_addr;
+    }
     send_command(frame->context, HARDDOOM_CMD_SURF_DIMS(frame->width, frame->height));
     for (i = 0; i < arg->rects_num; i++) {
         if (copy_from_user(&current_rect, ptr, sizeof(struct doomdev_fill_rect))) {
@@ -727,7 +736,10 @@ int doom_frame_draw_line(struct doom_frame *frame, struct doomdev_surf_ioctl_dra
     ptr = (void *) kernel_arg.lines_ptr;
 
     mutex_lock(&frame->context->dev->surface_lock);
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+    if (frame->context->dev->last_dst_frame != frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+        frame->context->dev->last_dst_frame = frame->pt_dma_addr;
+    }
     send_command(frame->context, HARDDOOM_CMD_SURF_DIMS(frame->width, frame->height));
     for (i = 0; i < kernel_arg.lines_num; i++) {
         if (copy_from_user(&current_line, ptr, sizeof(struct doomdev_line))) {
@@ -789,7 +801,10 @@ int doom_frame_draw_background(struct doom_frame *frame, struct doomdev_surf_ioc
 //    pr_err("DRAW BCG: %x %x %x %x\n",frame->pt_dma_addr, frame->width, frame->height ,texture->ptr_dma);
 
     mutex_lock(&frame->context->dev->surface_lock);
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+    if (frame->context->dev->last_dst_frame != frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+        frame->context->dev->last_dst_frame = frame->pt_dma_addr;
+    }
     send_command(frame->context, HARDDOOM_CMD_SURF_DIMS(frame->width, frame->height));
     send_command(frame->context, HARDDOOM_CMD_FLAT_ADDR(texture->ptr_dma));
     send_command(frame->context, HARDDOOM_CMD_DRAW_BACKGROUND);
@@ -898,7 +913,10 @@ int doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_
     fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
 //    kernel_arg.draw_flags = kernel_arg.draw_flags ^ DOOMDEV_DRAW_FLAGS_TRANSLATE;
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+    if (frame->context->dev->last_dst_frame != frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+        frame->context->dev->last_dst_frame = frame->pt_dma_addr;
+    }
     if (!(kernel_arg.draw_flags & DOOMDEV_DRAW_FLAGS_FUZZ)) {
         texture_file = fget(kernel_arg.texture_fd);
         // TODO check for errors
@@ -1060,7 +1078,10 @@ int doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_dr
     fence_num = atomic64_add_return(1, &frame->context->dev->op_counter);
     frame->last_fence = fence_num;
 
-    send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+    if (frame->context->dev->last_dst_frame != frame->pt_dma_addr) {
+        send_command(frame->context, HARDDOOM_CMD_SURF_DST_PT(frame->pt_dma_addr));
+        frame->context->dev->last_dst_frame = frame->pt_dma_addr;
+    }
 
     help_file = fget(kernel_arg.flat_fd);
     texture = help_file->private_data;
