@@ -74,6 +74,8 @@ static int init_doom_device(struct doom_device *doomdev)
     }
     iowrite32(0xffffffe, doomdev->bar0 + HARDDOOM_RESET);
     // maybe: zainicjować CMD_*_PTR, jeśli chcemy użyć bloku wczytywania pleceń,
+    iowrite32(0, doomdev->bar0 + HARDDOOM_FENCE_WAIT);
+    iowrite32(0, doomdev->bar0 + HARDDOOM_FENCE_LAST);
     iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_INTR);
 //    iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_INTR_ENABLE); // maybe change that!!!
     iowrite32(0x3ff ^ HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR_ENABLE);
@@ -97,21 +99,23 @@ static void cleanup_doom_device(struct doom_device *doomdev) {
 }
 
 static void doom_tasklet(unsigned long _doom_device) {
+    unsigned long flags;
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
 
-    spin_lock(&doomdev->tasklet_spinlock);
+    spin_lock_irqsave(&doomdev->tasklet_spinlock, flags);
 
     // CODE GOES HERE
 
 
-    spin_unlock(&doomdev->tasklet_spinlock);
+    spin_unlock_irqrestore(&doomdev->tasklet_spinlock, flags);
 }
 
 
 static void doom_tasklet_ping_sync(unsigned long _doom_device) {
+    unsigned long flags;
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
 
-    spin_lock(&doomdev->tasklet_spinlock);
+    spin_lock_irqsave(&doomdev->tasklet_spinlock, flags);
 
     // CODE GOES HERE
 
@@ -120,22 +124,39 @@ static void doom_tasklet_ping_sync(unsigned long _doom_device) {
         doomdev->ping_sync_event = NULL;
     }
 
-    spin_unlock(&doomdev->tasklet_spinlock);
+    spin_unlock_irqrestore(&doomdev->tasklet_spinlock, flags);
 }
 
 static void doom_tasklet_ping_async(unsigned long _doom_device) {
+    unsigned long flags;
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
 
-    spin_lock(&doomdev->tasklet_spinlock);
-
+    spin_lock_bh(&doomdev->tasklet_spinlock);
 
     // CODE GOES HERE
-    if (doomdev->ping_async_event != NULL) {
-        complete(doomdev->ping_async_event);
-        doomdev->ping_async_event = NULL;
-    }
+//    if (doomdev->ping_async_event != NULL) {
+//        complete(doomdev->ping_async_event);
+//        doomdev->ping_async_event = NULL;
+//    }
+    wake_up_all(&doomdev->pong_async_wait);
 
-    spin_unlock(&doomdev->tasklet_spinlock);
+    spin_unlock_bh(&doomdev->tasklet_spinlock);
+}
+
+static void doom_tasklet_fence(unsigned long _doom_device) {
+    unsigned long flags;
+    struct doom_device *doomdev = (struct doom_device *) _doom_device;
+
+    spin_lock_irqsave(&doomdev->fence_spinlock, flags);
+
+//    doomdev->fence_last = ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST);
+//    iowrite32(doomdev->fence_last + 1, doomdev->bar0 + HARDDOOM_FENCE_WAIT);
+
+    // CODE GOES HERE
+    wake_up_all(&doomdev->fence_waitqueue);
+    spin_unlock_irqrestore(&doomdev->fence_spinlock, flags);
+
+    pr_err("FENCE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST));
 }
 
 
@@ -161,11 +182,21 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     init_waitqueue_head(&doomdev->pong_async_wait);
     init_waitqueue_head(&doomdev->read_sync_wait);
     doomdev->read_flag_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->read_flag_spinlock);
-    doomdev->tasklet_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->read_flag_spinlock);
+    doomdev->tasklet_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->tasklet_spinlock);
     doomdev->read_flag = 0;
+    doomdev->commands_sent_since_last_ping_async = 0;
+    doomdev->commands_space_left = DOOM_BUFFER_SIZE;
+//    atomic_set(&doomdev->commands_sent_since_last_ping_async, 0);
+//    atomic_set(&doomdev->commands_space_left, DOOM_BUFFER_SIZE);
+    doomdev->batch_size = 0;
+
+    atomic_set(&doomdev->op_counter, 0);
+    init_waitqueue_head(&doomdev->fence_waitqueue);
+    doomdev->fence_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->fence_spinlock);
 
     tasklet_init(&doomdev->tasklet_ping_sync, doom_tasklet_ping_sync, (unsigned long) doomdev);
     tasklet_init(&doomdev->tasklet_ping_async, doom_tasklet_ping_async, (unsigned long) doomdev);
+    tasklet_init(&doomdev->tasklet_fence, doom_tasklet_fence, (unsigned long) doomdev);
 
     cdev_init(&doomdev->cdev, &doom_fops);
 
@@ -232,6 +263,7 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
     u32 intr;
     unsigned long flags;
     uint32_t enabled_interrupts;
+    int fence_last;
 
     intr = ioread32(doomdev->bar0 + HARDDOOM_INTR);
     if (intr & (HARDDOOM_INTR_FE_ERROR | HARDDOOM_INTR_FIFO_OVERFLOW | HARDDOOM_INTR_SURF_DST_OVERFLOW | HARDDOOM_INTR_SURF_SRC_OVERFLOW | HARDDOOM_INTR_PAGE_FAULT_SURF_DST | HARDDOOM_INTR_PAGE_FAULT_SURF_SRC | HARDDOOM_INTR_PAGE_FAULT_TEXTURE)) {
@@ -281,6 +313,10 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
 //        }
 
 //        wake_up(&doomdev->pong_async_wait);
+    }
+
+    if (intr & HARDDOOM_INTR_FENCE) {
+        tasklet_schedule(&doomdev->tasklet_fence);
     }
 
     if (intr & HARDDOOM_INTR_FE_ERROR) {

@@ -22,8 +22,10 @@
 
 #define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
 
-#define DOOM_BUFFER_SIZE (16 * 4096)
-#define DOOM_BUFFER_CRIT_LOW_SIZE 2
+#define DOOM_BUFFER_SIZE (64 * 4096)
+#define BATCH_SIZE 0x100
+
+#define DOOM_BUFFER_CRIT_LOW_SIZE (BATCH_SIZE + 5)
 
 typedef uint32_t doom_dma_ptr_t;
 typedef uint32_t doom_command_t;
@@ -57,6 +59,21 @@ struct doom_device {
     spinlock_t buffer_spinlock;
 
     void __iomem *bar0;
+
+    int fence_last;
+    atomic_t op_counter;
+    spinlock_t fence_spinlock;
+    wait_queue_head_t fence_waitqueue;
+    struct tasklet_struct tasklet_fence;
+
+    doom_command_t batch_buffer[BATCH_SIZE];
+    int batch_size;
+
+//    atomic_t commands_sent_since_last_ping_async;
+//    atomic_t commands_space_left;
+
+    int commands_sent_since_last_ping_async;
+    int commands_space_left;
 };
 
 struct doom_context {
@@ -76,6 +93,8 @@ struct doom_frame {
     size_t page_table_size;
 
 //    rwlock_t frame_rw_lock;
+    int last_fence;
+    spinlock_t last_fence_spinlock;
 };
 
 struct doom_col_texture {
@@ -93,6 +112,9 @@ struct doom_col_texture {
     size_t page_table_size;
     size_t texture_size;
     size_t rounded_texture_size;
+
+    int last_fence;
+    spinlock_t last_fence_spinlock;
 };
 
 struct doom_flat_texture {
@@ -100,6 +122,9 @@ struct doom_flat_texture {
 
     void *ptr_virt;
     doom_dma_ptr_t ptr_dma;
+
+    int last_fence;
+    spinlock_t last_fence_spinlock;
 };
 
 struct doom_colormaps {
@@ -109,6 +134,9 @@ struct doom_colormaps {
     doom_dma_ptr_t ptr_dma;
 
     int count;
+
+    int last_fence;
+    spinlock_t last_fence_spinlock;
 };
 
 #endif
