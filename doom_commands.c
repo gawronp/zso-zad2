@@ -79,7 +79,7 @@ void flush_batch(struct doom_context *context)
         to_enable = ioread32(context->dev->bar0 + HARDDOOM_ENABLE);
         iowrite32(to_enable & (~HARDDOOM_ENABLE_FETCH_CMD), context->dev->bar0 + HARDDOOM_ENABLE);
 
-        pr_err("JUMP TO THE BEGGINING OF BUFFER\n");
+//        pr_err("JUMP TO THE BEGGINING OF BUFFER\n");
         context->dev->buffer[context->dev->doom_buffer_pos_write] =
                 HARDDOOM_CMD_JUMP(context->dev->dma_buffer);
         context->dev->doom_buffer_pos_write = 0;

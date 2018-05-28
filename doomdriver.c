@@ -107,7 +107,7 @@ static void doom_tasklet_fence(unsigned long _doom_device)
     wake_up_all(&doomdev->fence_waitqueue);
 //    spin_unlock_bh(&doomdev->fence_spinlock);
 
-    pr_err("FENCE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST));
+//    pr_err("FENCE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST));
 }
 
 static int init_device_structures(struct doom_device *doomdev)
@@ -115,6 +115,7 @@ static int init_device_structures(struct doom_device *doomdev)
     dma_addr_t buffer_addr;
 
     mutex_init(&doomdev->device_lock);
+    sema_init(&doomdev->kobj_semaphore, 0);
 
     init_waitqueue_head(&doomdev->pong_async_wait);
     doomdev->commands_sent_since_last_ping_async = 0;
@@ -166,20 +167,51 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         return -ENOMEM;
     }
 
-    // maybe add drvdata?
+    doomdev->pdev = pdev;
+    cdev_init(&doomdev->cdev, &doom_fops);
+
+    err = pci_enable_device(pdev);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("pci_enable_device failed with %lu\n", err);
+        goto err_kmalloc;
+    }
+
+    pci_set_drvdata(pdev, doomdev);
+
+    err = pci_request_regions(pdev, DEVNAME);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("pci_request_regions failed with %lu\n", err);
+        goto err_enable_device;
+    }
+
+    doomdev->bar0 = pci_iomap(pdev, 0, 0);
+    if (!doomdev->bar0) {
+        pr_err("pci_iomap failed\n");
+        err = -EIO;
+        goto err_request_regions;
+    }
+
+    pci_set_master(pdev);
+    err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+    if (IS_ERR_VALUE(err)) {
+        pr_err("dma_set_mask_and_coherent failed with %lu\n", err);
+        goto err_set_master;
+    }
+
+    err = request_irq(pdev->irq, interrupt_handler, IRQF_SHARED, DEVNAME, doomdev);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("request_irq failed with %lu\n", err);
+        goto err_set_master;
+    }
+
     spin_lock(&idr_lock);
     doomdev->minor = idr_alloc(&doom_idr, doomdev, 0, DOOM_MAX_DEV_COUNT, GFP_KERNEL);
     spin_unlock(&idr_lock);
     if (IS_ERR_VALUE((unsigned long) doomdev->minor)) {
         err = doomdev->minor;
         pr_err("idr_alloc failed with %lu\n", err);
-        goto err_kmalloc;
+        goto err_request_irq;
     }
-
-    cdev_init(&doomdev->cdev, &doom_fops);
-    doomdev->pdev = pdev;
-    pci_set_drvdata(pdev, doomdev);
-    sema_init(&doomdev->kobj_semaphore, 0);
 
     err = kobject_init_and_add(&doomdev->kobj, &doomdev_kobj_type, &pdev->dev.kobj, DRIVER_NAME);
     if (IS_ERR_VALUE(err)) {
@@ -207,59 +239,13 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         goto err_kobject_add;
     }
 
-    err = pci_enable_device(pdev);
-    if (IS_ERR_VALUE(err)) {
-        pr_err("pci_enable_device failed with %lu\n", err);
-        goto err_device_create;
-    }
-
-    err = pci_request_regions(pdev, DEVNAME);
-    if (IS_ERR_VALUE(err)) {
-        pr_err("pci_request_regions failed with %lu\n", err);
-        goto err_enable_device;
-    }
-
-    doomdev->bar0 = pci_iomap(pdev, 0, 0);
-    if (!doomdev->bar0) {
-        pr_err("pci_iomap failed\n");
-        err = -EIO;
-        goto err_request_regions;
-    }
-
-    pci_set_master(pdev);
-    err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-    if (IS_ERR_VALUE(err)) {
-        pr_err("dma_set_mask_and_coherent failed with %lu\n", err);
-        goto err_set_master;
-    }
-
-    err = init_device_structures(doomdev);
-    if (IS_ERR_VALUE(err)) {
-        pr_err("initializing device structures failed with %lu\n", err);
-        goto err_set_master;
-    }
-
-    err = request_irq(pdev->irq, interrupt_handler, IRQF_SHARED, DEVNAME, doomdev);
-    if (IS_ERR_VALUE(err)) {
-        pr_err("request_irq failed with %lu\n", err);
-        goto err_set_master;
-    }
-
+    init_device_structures(doomdev);
     run_init_doom_device_codes(doomdev);
 
     pr_info("device doom%d probed sucessfully!\n", doomdev->minor);
 
     return 0;
 
-err_set_master:
-    pci_clear_master(pdev);
-    pci_iounmap(pdev, doomdev->bar0);
-err_request_regions:
-    pci_release_regions(pdev);
-err_enable_device:
-    pci_disable_device(pdev);
-err_device_create:
-    device_destroy(&doom_class, doom_major + doomdev->minor);
 err_kobject_add:
     kobject_del(&doomdev->cdev.kobj);
 err_cdev_add:
@@ -270,6 +256,15 @@ err_idr:
     spin_lock(&idr_lock);
     idr_remove(&doom_idr, doomdev->minor);
     spin_unlock(&idr_lock);
+err_request_irq:
+    free_irq(pdev->irq, doomdev);
+err_set_master:
+    pci_clear_master(pdev);
+    pci_iounmap(pdev, doomdev->bar0);
+err_request_regions:
+    pci_release_regions(pdev);
+err_enable_device:
+    pci_disable_device(pdev);
 err_kmalloc:
     kfree(doomdev);
     return err;
