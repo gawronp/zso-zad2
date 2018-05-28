@@ -20,8 +20,6 @@
 #define DOOMDEV_PT_ALIGN 64
 #define DOOMDEV_COL_TEXTURE_MEM_ALIGN 256
 
-#define PING_ASYNC_MMIO_COMMANDS_SPAN 512/4
-
 #define DOOM_BUFFER_SIZE 0x10000
 #define DOOM_ASYNC_FREQ (DOOM_BUFFER_SIZE / 16)
 #define BATCH_SIZE 0x100
@@ -71,10 +69,15 @@ struct doom_device {
     doom_dma_ptr_t last_src_frame;
 };
 
+/*
+ * context the HardDoom device was opened in, currently serves no purpose,
+ * makes it easier to expand the driver with additional functionality
+ */
 struct doom_context {
     struct doom_device *dev;
 };
 
+// reperesents frame buffer file
 struct doom_frame {
     struct doom_context *context;
 
@@ -90,6 +93,7 @@ struct doom_frame {
     int last_fence; // numer of last fence that frame was used before
 };
 
+// reperesents column texture file
 struct doom_col_texture {
     struct doom_context *context;
 
@@ -107,6 +111,7 @@ struct doom_col_texture {
     int last_fence;
 };
 
+// reperesents flat texture file
 struct doom_flat_texture {
     struct doom_context *context;
 
@@ -116,6 +121,7 @@ struct doom_flat_texture {
     int last_fence;
 };
 
+// reperesents colormaps file
 struct doom_colormaps {
     struct doom_context *context;
 

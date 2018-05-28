@@ -116,7 +116,7 @@ void send_command(struct doom_context *context, doom_command_t comm)
     context->dev->batch_buffer[context->dev->batch_size] = comm;
     context->dev->batch_size += 1;
 
-    if (unlikely(context->dev->batch_size == BATCH_SIZE)) {
+    if (context->dev->batch_size == BATCH_SIZE) {
         flush_batch(context);
     }
 }
