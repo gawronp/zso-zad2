@@ -8,6 +8,7 @@
 #include <linux/wait.h>
 #include <linux/completion.h>
 #include <linux/interrupt.h>
+#include <linux/semaphore.h>
 
 #define DEVNAME "doom"
 
@@ -35,6 +36,9 @@ struct doom_device {
     struct device *dev;
     int minor;
     void __iomem *bar0;
+
+    struct kobject kobj; // for counting references
+    struct semaphore kobj_semaphore; // for waiting untill references count = 0
 
     // device-wide lock, used to prevent race conditions
     struct mutex device_lock;
@@ -80,6 +84,7 @@ struct doom_context {
 // reperesents frame buffer file
 struct doom_frame {
     struct doom_context *context;
+    struct kobject *kobj;
 
     uint16_t width;
     uint16_t height;
@@ -96,6 +101,7 @@ struct doom_frame {
 // reperesents column texture file
 struct doom_col_texture {
     struct doom_context *context;
+    struct kobject *kobj;
 
     uint16_t height;
     size_t texture_size;
@@ -114,6 +120,7 @@ struct doom_col_texture {
 // reperesents flat texture file
 struct doom_flat_texture {
     struct doom_context *context;
+    struct kobject *kobj;
 
     void *ptr_virt; // virtual pointer to texture
     doom_dma_ptr_t ptr_dma; // dma pointer to texture
@@ -124,6 +131,7 @@ struct doom_flat_texture {
 // reperesents colormaps file
 struct doom_colormaps {
     struct doom_context *context;
+    struct kobject *kobj;
 
     int count;
 

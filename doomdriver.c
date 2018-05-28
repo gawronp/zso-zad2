@@ -33,7 +33,6 @@ static const struct pci_device_id ids_table[2] = {
 static int doom_probe(struct pci_dev *dev, const struct pci_device_id *id);
 static void doom_remove(struct pci_dev *dev);
 
-//static const struct pci_device_id ids_table = { doomdev_device, zero_device };
 static struct pci_driver this_driver = {
         .name = DRIVER_NAME,
         .id_table = ids_table,
@@ -92,13 +91,6 @@ static void run_init_doom_device_codes(struct doom_device *doomdev)
     iowrite32(0x3ff, doomdev->bar0 + HARDDOOM_ENABLE);
 }
 
-static void cleanup_doom_device(struct doom_device *doomdev)
-{
-    iowrite32(0, doomdev->bar0 + HARDDOOM_ENABLE);
-    iowrite32(0, doomdev->bar0 + HARDDOOM_INTR_ENABLE);
-    (void) ioread32(doomdev->bar0 + HARDDOOM_FIFO_FREE);
-}
-
 static void doom_tasklet_ping_async(unsigned long _doom_device)
 {
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
@@ -149,6 +141,19 @@ static int init_device_structures(struct doom_device *doomdev)
     return 0;
 }
 
+static void doomdev_kobj_release(struct kobject *kobject)
+{
+    struct doom_device *doomdev;
+
+    BUG_ON(!kobject);
+
+    doomdev = container_of(kobject, struct doom_device, kobj);
+    kobject_put(kobject->parent);
+
+    up(&doomdev->kobj_semaphore);
+}
+
+static struct kobj_type doomdev_kobj_type = {.release = doomdev_kobj_release};
 
 static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
@@ -165,7 +170,6 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     spin_lock(&idr_lock);
     doomdev->minor = idr_alloc(&doom_idr, doomdev, 0, DOOM_MAX_DEV_COUNT, GFP_KERNEL);
     spin_unlock(&idr_lock);
-
     if (IS_ERR_VALUE((unsigned long) doomdev->minor)) {
         err = doomdev->minor;
         pr_err("idr_alloc failed with %lu\n", err);
@@ -175,11 +179,24 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     cdev_init(&doomdev->cdev, &doom_fops);
     doomdev->pdev = pdev;
     pci_set_drvdata(pdev, doomdev);
+    sema_init(&doomdev->kobj_semaphore, 0);
+
+    err = kobject_init_and_add(&doomdev->kobj, &doomdev_kobj_type, &pdev->dev.kobj, DRIVER_NAME);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("kobject_init_and_add failed with %lu\n", err);
+        goto err_idr;
+    }
 
     err = cdev_add(&doomdev->cdev, doom_major + doomdev->minor, 1);
     if (IS_ERR_VALUE(err)) {
         pr_err("cdev_add failed with %lu\n", err);
-        goto err_idr;
+        goto err_kobject_init_and_add;
+    }
+
+    err = kobject_add(&doomdev->cdev.kobj, &doomdev->kobj, "chardev");
+    if (IS_ERR_VALUE(err)) {
+        pr_err("kobject_add failed with %lu\n", err);
+        goto err_cdev_add;
     }
 
     doomdev->dev = device_create(
@@ -187,7 +204,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     if (IS_ERR(doomdev->dev)) {
         err = PTR_ERR(doomdev->dev);
         pr_err("device_create failed with %lu\n", err);
-        goto err_cdev_add;
+        goto err_kobject_add;
     }
 
     err = pci_enable_device(pdev);
@@ -243,8 +260,12 @@ err_enable_device:
     pci_disable_device(pdev);
 err_device_create:
     device_destroy(&doom_class, doom_major + doomdev->minor);
+err_kobject_add:
+    kobject_del(&doomdev->cdev.kobj);
 err_cdev_add:
     cdev_del(&doomdev->cdev);
+err_kobject_init_and_add:
+    kobject_del(&doomdev->kobj);
 err_idr:
     spin_lock(&idr_lock);
     idr_remove(&doom_idr, doomdev->minor);
@@ -266,41 +287,26 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
     }
     iowrite32(intr, doomdev->bar0 + HARDDOOM_INTR);
 
-    if (intr & (HARDDOOM_INTR_FE_ERROR | HARDDOOM_INTR_FIFO_OVERFLOW | HARDDOOM_INTR_SURF_DST_OVERFLOW | HARDDOOM_INTR_SURF_SRC_OVERFLOW | HARDDOOM_INTR_PAGE_FAULT_SURF_DST | HARDDOOM_INTR_PAGE_FAULT_SURF_SRC | HARDDOOM_INTR_PAGE_FAULT_TEXTURE)) {
-        pr_err("interrupt came: %x\n", intr);
-        if (intr & HARDDOOM_INTR_FE_ERROR) {
-            pr_err("FE_ERROR_CODE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
-            pr_err("FE_ERROR_DATA: %x\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CMD));
-            pr_err("XY_SURF_DIMS: %x\n", ioread32(doomdev->bar0 + HARDDOOM_XY_SURF_DIMS));
-        }
+    if (intr & HARDDOOM_INTR_FE_ERROR)
+        pr_err("received pci FE ERROR interrupt, about critical failure caused by instruction: %x\n",
+               ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
 
-        if (intr & HARDDOOM_INTR_PAGE_FAULT_TEXTURE) {
-            pr_err("TLB_PT_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_PT_TEXTURE));
-            pr_err("TLB_VADDR_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_VADDR_TEXTURE));
-        }
-
-        if (intr & HARDDOOM_INTR_PAGE_FAULT_SURF_DST) {
-            pr_err("TLB_PT_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_PT_SURF_DST));
-            pr_err("TLB_VADDR_TEXTURE: %x\n", ioread32(doomdev->bar0 + HARDDOOM_TLB_VADDR_SURF_DST));
-        }
-    }
-    if (intr & HARDDOOM_INTR_PONG_SYNC) {
-        pr_err("THIS SHOULD NEVER HAPPEN!\n");
-    }
+    if (intr & (HARDDOOM_INTR_FIFO_OVERFLOW
+                | HARDDOOM_INTR_SURF_DST_OVERFLOW
+                | HARDDOOM_INTR_SURF_SRC_OVERFLOW
+                | HARDDOOM_INTR_PAGE_FAULT_SURF_DST
+                | HARDDOOM_INTR_PAGE_FAULT_SURF_SRC
+                | HARDDOOM_INTR_PAGE_FAULT_TEXTURE))
+        pr_err("received pci interrupt about critical device failure, interrupt code: %x\n", intr);
 
     if (intr & HARDDOOM_INTR_PONG_ASYNC) {
         enabled_interrupts = ioread32(doomdev->bar0 + HARDDOOM_INTR_ENABLE);
         iowrite32(enabled_interrupts & (~HARDDOOM_INTR_PONG_ASYNC), doomdev->bar0 + HARDDOOM_INTR_ENABLE);
-        iowrite32(HARDDOOM_INTR_PONG_ASYNC, doomdev->bar0 + HARDDOOM_INTR);
         tasklet_schedule(&doomdev->tasklet_ping_async);
     }
 
     if (intr & HARDDOOM_INTR_FENCE) {
         tasklet_schedule(&doomdev->tasklet_fence);
-    }
-
-    if (intr & HARDDOOM_INTR_FE_ERROR) {
-        pr_err("last error: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FE_ERROR_CODE));
     }
 
     return IRQ_HANDLED;
@@ -310,19 +316,32 @@ static void doom_remove(struct pci_dev *pdev)
 {
     struct doom_device *dev = pci_get_drvdata(pdev);
 
-    cdev_del(&dev->cdev);
+    BUG_ON(!dev);
+
     device_destroy(&doom_class, doom_major + dev->minor);
+    cdev_del(&dev->cdev);
+    kobject_del(&dev->kobj);
+
+    // waiting for reference count to drop:
+    kobject_put(&dev->kobj);
+    down(&dev->kobj_semaphore);
+    kobject_del(&dev->cdev.kobj);
+
+    iowrite32(0, dev->bar0 + HARDDOOM_ENABLE);
+    iowrite32(0, dev->bar0 + HARDDOOM_INTR_ENABLE);
+    (void) ioread32(dev->bar0 + HARDDOOM_FIFO_FREE);
+
+    tasklet_kill(&dev->tasklet_fence);
+    tasklet_kill(&dev->tasklet_ping_async);
 
     spin_lock(&idr_lock);
     idr_remove(&doom_idr, dev->minor);
     spin_unlock(&idr_lock);
 
-    cleanup_doom_device(dev);
-
+    free_irq(pdev->irq, dev);
     pci_iounmap(pdev, dev->bar0);
     pci_release_regions(dev->pdev);
     pci_disable_device(dev->pdev);
-
     kfree(dev);
 }
 
@@ -360,19 +379,16 @@ static int doom_open(struct inode *ino, struct file *filep)
     spin_unlock(&idr_lock);
 
     if (unlikely(dev == NULL)) {
-//        printk(KERN_INFO "Error getting device data, id might not be valid.\n");
         pr_err("Error getting device data, id might not be valid.");
-        return -EIO;
+        return -ENOENT;
     }
 
     context = kmalloc(sizeof(struct doom_context), GFP_KERNEL);
     if (unlikely(!context)) {
-//        printk(KERN_INFO "kmalloc failed\n");
-        pr_err("kmalloc failed\n");
+        pr_err("kmalloc failed when allocating memory for struct doom_context\n");
         return -ENOMEM;
     }
 
-//    init_context(context);
     context->dev = dev;
     filep->private_data = context;
     return 0;
@@ -380,23 +396,35 @@ static int doom_open(struct inode *ino, struct file *filep)
 
 static int doom_release(struct inode *ino, struct file *filep)
 {
-    kfree(filep->private_data);
-    // TODO: ????
+    if (unlikely(filep->f_op != &doom_fops)) {
+        pr_err("doom_release invoked on incorrect file\n");
+        return -EINVAL;
+    }
+    kfree(filep->private_data); // freeing memory of struct doom_context
     return 0;
 }
 
 static int doom_init(void)
 {
-    int err;
+    long err;
 
-    if ((err = class_register(&doom_class)))
+    err = class_register(&doom_class);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("class_register failed with %ld\n", err);
         return err;
+    }
 
-    if ((err = alloc_chrdev_region(&doom_major, 0, DOOM_MAX_DEV_COUNT, DEVNAME)))
+    err = alloc_chrdev_region(&doom_major, 0, DOOM_MAX_DEV_COUNT, DEVNAME);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("alloc_chdev_region failed with %ld\n", err);
         goto err_alloc_region;
+    }
 
-    if ((err = pci_register_driver(&this_driver)))
+    err = pci_register_driver(&this_driver);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("pci_register_driver failed with %ld\n", err);
         goto err_pci_driver_register;
+    }
 
 err_pci_driver_register:
     unregister_chrdev_region(doom_major, DOOM_MAX_DEV_COUNT);

@@ -71,7 +71,7 @@ static void wait_for_fence(struct doom_context * context, uint64_t fence_num)
 
 long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_create_surface *ptr)
 {
-    int err;
+    int err = 0;
     int i;
     int err_i;
     long frame_fd;
@@ -105,6 +105,12 @@ long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_cre
     }
 
     frame->context = context;
+    frame->kobj = kobject_get(&context->dev->kobj);
+    if (unlikely(!frame->kobj)) {
+        pr_err("kobject_get failed, probably kobject is in the process of being destroyed\n");
+        goto err_kmalloc_frame;
+    }
+
     frame->width = kernel_arg.width;
     frame->height = kernel_arg.height;
     frame->pages_count = roundup(kernel_arg.width * kernel_arg.height, HARDDOOM_PAGE_SIZE) / HARDDOOM_PAGE_SIZE;
@@ -171,6 +177,8 @@ err_alloc_frame_pagetable:
         dma_free_coherent(&context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, frame->pt_dma, frame->pt_dma_addr);
     if (frame->pt_virt)
         kfree(frame->pt_virt);
+    kobject_put(frame->kobj);
+err_kmalloc_frame:
     kfree(frame);
     return err;
 }
@@ -341,7 +349,7 @@ err_dma_alloc_col_texture_pagetable_2:
 
 long create_column_texture(struct doom_context * context, struct doomdev_ioctl_create_texture *ptr)
 {
-    long err;
+    long err = 0;
     long col_texture_fd;
     struct doom_col_texture *col_texture;
     struct doomdev_ioctl_create_texture kernel_arg;
@@ -359,6 +367,12 @@ long create_column_texture(struct doom_context * context, struct doomdev_ioctl_c
     }
 
     col_texture->context = context;
+    col_texture->kobj = kobject_get(&context->dev->kobj);
+    if (unlikely(!col_texture->kobj)) {
+        pr_err("kobject_get failed, probably kobject is in the process of being destroyed\n");
+        goto err_kmalloc_col_texture;
+    }
+
     col_texture->height = kernel_arg.height;
     col_texture->texture_size = kernel_arg.size;
     col_texture->rounded_texture_size = roundup(kernel_arg.size, DOOMDEV_COL_TEXTURE_MEM_ALIGN);
@@ -373,14 +387,14 @@ long create_column_texture(struct doom_context * context, struct doomdev_ioctl_c
         if (IS_ERR_VALUE(col_texture_fd)) {
             err = col_texture_fd;
             pr_err("create_column_texture_pagetable_on_last_page failed with code %ld\n", err);
-            goto err_kmalloc_col_texture;
+            goto err_kobject_get_col_texture;
         }
     } else { // otherwise - we need separate allocation for pagetable
         col_texture_fd = create_column_texture_separate_pagetable(context, col_texture, kernel_arg);
         if (IS_ERR_VALUE(col_texture_fd)) {
             err = col_texture_fd;
             pr_err("create_column_texture_separate_pagetable failed with code %ld\n", err);
-            goto err_kmalloc_col_texture;
+            goto err_kobject_get_col_texture;
         }
     }
 
@@ -396,6 +410,8 @@ long create_column_texture(struct doom_context * context, struct doomdev_ioctl_c
 
 //    wmb();
 
+err_kobject_get_col_texture:
+    kobject_put(col_texture->kobj);
 err_kmalloc_col_texture:
     kfree(col_texture);
     return err;
@@ -403,7 +419,7 @@ err_kmalloc_col_texture:
 
 long create_flat_texture(struct doom_context * context, struct doomdev_ioctl_create_flat *ptr)
 {
-    long err;
+    long err = 0;
     long flat_texture_fd;
     struct doom_flat_texture *texture;
     dma_addr_t dma_addr;
@@ -420,13 +436,19 @@ long create_flat_texture(struct doom_context * context, struct doomdev_ioctl_cre
         return -ENOMEM;
     }
     texture->context = context;
-    //HARDDOOM_FLAT_SIZE == HARDDOOM_PAGE_SIZE
+    texture->kobj = kobject_get(&context->dev->kobj);
+    if (unlikely(!texture->kobj)) {
+        pr_err("kobject_get failed, probably kobject is in the process of being destroyed\n");
+        goto err_kmalloc_flat_texture;
+    }
+
+    //HARDDOOM_FLAT_SIZE == HARDDOOM_PAGE_SIZE:
     texture->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_FLAT_SIZE, &dma_addr, GFP_KERNEL);
     texture->ptr_dma = (doom_dma_ptr_t) dma_addr;
     if (unlikely(!texture->ptr_virt || !texture->ptr_dma)) {
         pr_err("dma_alloc_coherent failed when allocating memory for flat texture\n");
         err = -ENOMEM;
-        goto err_kmalloc_flat_texture;
+        goto err_kobject_get_flat_texture;
     }
 
     if (unlikely(copy_from_user(texture->ptr_virt, (void *) kernel_arg.data_ptr, HARDDOOM_FLAT_SIZE))) {
@@ -449,6 +471,8 @@ long create_flat_texture(struct doom_context * context, struct doomdev_ioctl_cre
 
 err_dma_alloc_flat_texture:
     dma_free_coherent(&context->dev->pdev->dev, HARDDOOM_FLAT_SIZE, texture->ptr_virt, texture->ptr_dma);
+err_kobject_get_flat_texture:
+    kobject_put(texture->kobj);
 err_kmalloc_flat_texture:
     kfree(texture);
     return err;
@@ -456,7 +480,7 @@ err_kmalloc_flat_texture:
 
 long create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_create_colormaps *ptr)
 {
-    long err;
+    long err = 0;
     long colormaps_array_fd;
     struct doom_colormaps *colormaps;
     dma_addr_t dma_addr;
@@ -474,6 +498,11 @@ long create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_
     }
     colormaps->context = context;
     colormaps->count = kernel_arg.num;
+    colormaps->kobj = kobject_get(&context->dev->kobj);
+    if (unlikely(!colormaps->kobj)) {
+        pr_err("kobject_get failed, probably kobject is in the process of being destroyed\n");
+        goto err_kmalloc_colormaps;
+    }
 
     colormaps->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev,
                                              roundup(colormaps->count * HARDDOOM_COLORMAP_SIZE, HARDDOOM_PAGE_SIZE),
@@ -483,7 +512,7 @@ long create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_
     if (unlikely(!colormaps->ptr_virt || !colormaps->ptr_dma)) {
         pr_err("dma_alloc_coherent failed when allocating memory for array of colormaps\n");
         err = -ENOMEM;
-        goto err_kmalloc_colormaps;
+        goto err_kobject_get_colormaps;
     }
 
     if (unlikely(
@@ -513,6 +542,8 @@ err_dma_alloc_colormaps:
                       roundup(colormaps->count * HARDDOOM_COLORMAP_SIZE, HARDDOOM_PAGE_SIZE),
                       colormaps->ptr_virt,
                       colormaps->ptr_dma);
+err_kobject_get_colormaps:
+    kobject_put(colormaps->kobj);
 err_kmalloc_colormaps:
     kfree(colormaps);
     return err;
@@ -602,6 +633,7 @@ static int doom_frame_release(struct inode *ino, struct file *filep)
     }
     dma_free_coherent(&frame->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, frame->pt_dma, frame->pt_dma_addr);
     kfree(frame->pt_virt);
+    kobject_put(frame->kobj);
     mutex_unlock(&frame->context->dev->device_lock);
 
     kfree(frame);
@@ -634,6 +666,7 @@ static int doom_col_texture_release(struct inode *ino, struct file *filep)
                           col_texture->pt_dma,
                           col_texture->pt_dma_addr);
     kfree(col_texture->pt_virt);
+    kobject_put(col_texture->kobj);
     mutex_unlock(&col_texture->context->dev->device_lock);
 
     kfree(col_texture);
@@ -654,6 +687,7 @@ static int doom_flat_texture_release(struct inode *ino, struct file *filep)
     mutex_lock(&texture->context->dev->device_lock);
     wait_for_fence(texture->context, texture->last_fence);
     dma_free_coherent(&texture->context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, texture->ptr_virt, texture->ptr_dma);
+    kobject_put(texture->kobj);
     mutex_unlock(&texture->context->dev->device_lock);
 
     kfree(texture);
@@ -677,6 +711,7 @@ static int doom_colormaps_release(struct inode *ino, struct file *filep)
                       roundup(colormaps->count * HARDDOOM_COLORMAP_SIZE, HARDDOOM_PAGE_SIZE),
                       colormaps->ptr_virt,
                       colormaps->ptr_dma);
+    kobject_put(colormaps->kobj);
     mutex_unlock(&colormaps->context->dev->device_lock);
 
     kfree(colormaps);
