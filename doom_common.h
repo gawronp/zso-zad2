@@ -52,7 +52,6 @@ struct doom_device {
     struct tasklet_struct tasklet_fence;
     wait_queue_head_t fence_waitqueue;
     atomic64_t op_counter;
-    spinlock_t fence_spinlock;
 
     // Doom device commands buffer.
     doom_command_t *buffer;

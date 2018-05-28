@@ -56,17 +56,11 @@ static int is_fence_ready(struct doom_context * context, uint64_t fence_num)
 
 static void wait_for_fence(struct doom_context * context, uint64_t fence_num)
 {
-//    unsigned long flags;
-
-//    spin_lock_irqsave(&context->dev->fence_spinlock, flags);
     while(!is_fence_ready(context, fence_num)) {
         iowrite32(fence_num, context->dev->bar0 + HARDDOOM_FENCE_WAIT);
-//        spin_unlock_irqrestore(&context->dev->fence_spinlock, flags);
         wait_event_interruptible(context->dev->fence_waitqueue,
                                  is_fence_ready(context, fence_num));
-//        spin_lock_irqsave(&context->dev->fence_spinlock, flags);
     }
-//    spin_unlock_irqrestore(&context->dev->fence_spinlock, flags);
 }
 
 long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_create_surface *ptr)
@@ -123,7 +117,7 @@ long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_cre
                                        GFP_KERNEL);
     frame->pt_dma_addr = (doom_dma_ptr_t) dma_addr;
     // and also virt page table:
-    frame->pt_virt = kmalloc(frame->pages_count * sizeof(doom_dma_ptr_t *), GFP_KERNEL);
+    frame->pt_virt = kmalloc(frame->pages_count * sizeof(void *), GFP_KERNEL);
 
     if (unlikely(!frame->pt_dma || !frame->pt_dma_addr || !frame->pt_virt)) {
         pr_err("dma_alloc_coherent or kmalloc failed when allocating page table for frame buffer\n");
@@ -143,8 +137,6 @@ long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_cre
     }
 
     frame->last_fence = atomic64_read(&context->dev->op_counter);
-
-//    wmb();
 
     frame_fd = anon_inode_getfd("frame", &doom_frame_fops, frame, 0);
     if (IS_ERR_VALUE(frame_fd)) {
@@ -408,8 +400,6 @@ long create_column_texture(struct doom_context * context, struct doomdev_ioctl_c
 
     return col_texture_fd;
 
-//    wmb();
-
 err_kobject_get_col_texture:
     kobject_put(col_texture->kobj);
 err_kmalloc_col_texture:
@@ -458,7 +448,6 @@ long create_flat_texture(struct doom_context * context, struct doomdev_ioctl_cre
     }
 
     texture->last_fence = atomic64_read(&context->dev->op_counter);
-//    wmb();
 
     flat_texture_fd = anon_inode_getfd("flat_texture", &doom_flat_texture_fops, texture, 0);
     if (IS_ERR_VALUE(flat_texture_fd)) {
@@ -525,7 +514,6 @@ long create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_
     }
 
     colormaps->last_fence = atomic64_read(&context->dev->op_counter);
-//    wmb();
 
     colormaps_array_fd = anon_inode_getfd("colormaps", &doom_colormaps_fops, colormaps, 0);
     if (IS_ERR_VALUE(colormaps_array_fd)) {

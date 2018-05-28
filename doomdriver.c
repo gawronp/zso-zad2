@@ -96,17 +96,12 @@ static void doom_tasklet_ping_async(unsigned long _doom_device)
 
 static void doom_tasklet_fence(unsigned long _doom_device)
 {
-//    unsigned long flags;
     struct doom_device *doomdev = (struct doom_device *) _doom_device;
 
-//    spin_lock_bh(&doomdev->fence_spinlock);
     wake_up_all(&doomdev->fence_waitqueue);
-//    spin_unlock_bh(&doomdev->fence_spinlock);
-
-//    pr_err("FENCE: %d\n", ioread32(doomdev->bar0 + HARDDOOM_FENCE_LAST));
 }
 
-static int init_device_structures(struct doom_device *doomdev)
+static long init_device_structures(struct doom_device *doomdev)
 {
     dma_addr_t buffer_addr;
 
@@ -121,7 +116,6 @@ static int init_device_structures(struct doom_device *doomdev)
 
     atomic64_set(&doomdev->op_counter, 0);
     init_waitqueue_head(&doomdev->fence_waitqueue);
-    doomdev->fence_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->fence_spinlock);
 
     tasklet_init(&doomdev->tasklet_ping_async, doom_tasklet_ping_async, (unsigned long) doomdev);
     tasklet_init(&doomdev->tasklet_fence, doom_tasklet_fence, (unsigned long) doomdev);
@@ -131,8 +125,10 @@ static int init_device_structures(struct doom_device *doomdev)
     doomdev->buffer = dma_alloc_coherent(&doomdev->pdev->dev, DOOM_BUFFER_SIZE * sizeof(doom_command_t),
                                          &buffer_addr, GFP_KERNEL);
     doomdev->dma_buffer = (doom_dma_ptr_t) buffer_addr;
-
-
+    if (unlikely(!doomdev->buffer || !doomdev->dma_buffer)) {
+        pr_err("dma_alloc_coherent failed when allocating space for device commands buffer\n");
+        return -ENOMEM;
+    }
     doomdev->doom_buffer_pos_write = 0;
 
     return 0;
@@ -159,7 +155,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
     doomdev = kzalloc(sizeof(struct doom_device), GFP_KERNEL);
     if (unlikely(!doomdev)) {
-        pr_err("kmalloc failed!");
+        pr_err("kzalloc failed!");
         return -ENOMEM;
     }
 
@@ -169,7 +165,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     err = pci_enable_device(pdev);
     if (IS_ERR_VALUE(err)) {
         pr_err("pci_enable_device failed with %lu\n", err);
-        goto err_kmalloc;
+        goto err_kzalloc;
     }
 
     pci_set_drvdata(pdev, doomdev);
@@ -235,13 +231,19 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         goto err_kobject_add;
     }
 
-    init_device_structures(doomdev);
+    err = init_device_structures(doomdev);
+    if (IS_ERR_VALUE(err)) {
+        pr_err("init_device_structures failed with code %lu\n", err);
+        goto err_device_create;
+    }
     run_init_doom_device_codes(doomdev);
 
     pr_info("device doom%d probed sucessfully!\n", doomdev->minor);
 
     return 0;
 
+err_device_create:
+    device_destroy(doom_class, doomdev->cdev.dev);
 err_kobject_add:
     kobject_del(&doomdev->cdev.kobj);
 err_cdev_add:
@@ -261,7 +263,7 @@ err_request_regions:
     pci_release_regions(pdev);
 err_enable_device:
     pci_disable_device(pdev);
-err_kmalloc:
+err_kzalloc:
     kfree(doomdev);
     return err;
 }
@@ -305,9 +307,12 @@ static irqreturn_t interrupt_handler(int irq, void *dev)
 
 static void doom_remove(struct pci_dev *pdev)
 {
+    int device_minor;
     struct doom_device *dev = pci_get_drvdata(pdev);
 
     BUG_ON(!dev);
+
+    device_minor = dev->minor;
 
     device_destroy(doom_class, dev->cdev.dev);
     cdev_del(&dev->cdev);
@@ -325,6 +330,8 @@ static void doom_remove(struct pci_dev *pdev)
     tasklet_kill(&dev->tasklet_fence);
     tasklet_kill(&dev->tasklet_ping_async);
 
+    dma_free_coherent(&dev->pdev->dev, DOOM_BUFFER_SIZE * sizeof(doom_command_t), dev->buffer, dev->dma_buffer);
+
     spin_lock(&idr_lock);
     idr_remove(&doom_idr, dev->minor);
     spin_unlock(&idr_lock);
@@ -334,6 +341,8 @@ static void doom_remove(struct pci_dev *pdev)
     pci_release_regions(dev->pdev);
     pci_disable_device(dev->pdev);
     kfree(dev);
+
+    pr_info("device doom%d removed sucessfully!\n", device_minor);
 }
 
 static long doom_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -401,6 +410,7 @@ static int doom_init(void)
 
     doom_class = class_create(THIS_MODULE, DEVNAME);
     if (IS_ERR(doom_class)) {
+        pr_err("class_create failed with %ld\n", PTR_ERR(doom_class));
         return PTR_ERR(doom_class);
     }
 
@@ -416,10 +426,11 @@ static int doom_init(void)
         goto err_alloc_chrdev_region;
     }
 
+    return 0;
+
 err_alloc_chrdev_region:
     unregister_chrdev_region(doom_major, DOOM_MAX_DEV_COUNT);
 err_class_create:
-//    class_unregister(&doom_class);
     class_destroy(doom_class);
     return err;
 }
@@ -429,7 +440,6 @@ static void doom_cleanup(void)
     pci_unregister_driver(&this_driver);
     idr_destroy(&doom_idr);
     unregister_chrdev_region(doom_major, DOOM_MAX_DEV_COUNT);
-//    class_unregister(&doom_class);
     class_destroy(doom_class);
 }
 
