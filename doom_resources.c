@@ -108,9 +108,9 @@ long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_cre
     frame->pages_count = roundup(kernel_arg.width * kernel_arg.height, HARDDOOM_PAGE_SIZE) / HARDDOOM_PAGE_SIZE;
     frame->page_table_size = roundup(frame->pages_count * sizeof(doom_dma_ptr_t), DOOMDEV_PT_ALIGN);
 
-    // allocating dma page table:
+    // allocating dma page table - it will always fit on 1 page (1024 entries * 4 bytes)
     frame->pt_dma = dma_alloc_coherent(&context->dev->pdev->dev,
-                                       frame->page_table_size,
+                                       HARDDOOM_PAGE_SIZE,
                                        &dma_addr,
                                        GFP_KERNEL);
     frame->pt_dma_addr = (doom_dma_ptr_t) dma_addr;
@@ -124,8 +124,7 @@ long create_frame_buffer(struct doom_context * context, struct doomdev_ioctl_cre
 
     // allocating pages:
     for (i = 0; i < frame->pages_count; i++) {
-        frame->pt_virt[i] = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_PAGE_SIZE,
-                                               &dma_addr, GFP_KERNEL);
+        frame->pt_virt[i] = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, &dma_addr, GFP_KERNEL);
         if (unlikely(!frame->pt_virt[i] || !dma_addr)) {
             pr_err("dma_alloc_coherent failed when allocating page for frame buffer\n");
             return -ENOMEM;
@@ -187,11 +186,7 @@ long create_column_texture(struct doom_context * context, struct doomdev_ioctl_c
                                                 - (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE))) {
         col_texture->is_page_table_on_last_page = 1;
 
-        last_page_virt = dma_alloc_coherent(&context->dev->pdev->dev,
-                                            (col_texture->rounded_texture_size % HARDDOOM_PAGE_SIZE) +
-                                                    col_texture->page_table_size,
-                                            &dma_addr,
-                                            GFP_KERNEL);
+        last_page_virt = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_PAGE_SIZE, &dma_addr, GFP_KERNEL);
         last_page_dma = (doom_dma_ptr_t) dma_addr;
         if (unlikely(!last_page_virt || !last_page_dma)) {
             pr_err("dma_alloc_coherent failed when allocating page table / last page for column texture\n");
@@ -240,7 +235,7 @@ long create_column_texture(struct doom_context * context, struct doomdev_ioctl_c
     } else { // otherwise - we need separate allocation for pagetable
         col_texture->is_page_table_on_last_page = 0;
         col_texture->pt_dma = dma_alloc_coherent(&context->dev->pdev->dev,
-                                                 col_texture->page_table_size,
+                                                 HARDDOOM_PAGE_SIZE,
                                                  &dma_addr,
                                                  GFP_KERNEL);
         if (unlikely(!col_texture->pt_dma || !dma_addr)) {
@@ -313,7 +308,7 @@ long create_flat_texture(struct doom_context * context, struct doomdev_ioctl_cre
         return -ENOMEM;
     }
     texture->context = context;
-
+    // we can allocate HARDDOOM_FLAT_SIZE bytes because it's == HARDDOOM_PAGE_SIZE
     texture->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev, HARDDOOM_FLAT_SIZE, &dma_addr, GFP_KERNEL);
     texture->ptr_dma = (doom_dma_ptr_t) dma_addr;
     if (unlikely(!texture->ptr_virt || !texture->ptr_dma)) {
@@ -359,7 +354,7 @@ long create_colormaps_array(struct doom_context * context, struct doomdev_ioctl_
     colormaps->count = kernel_arg.num;
 
     colormaps->ptr_virt = dma_alloc_coherent(&context->dev->pdev->dev,
-                                             colormaps->count * HARDDOOM_COLORMAP_SIZE,
+                                             roundup(colormaps->count * HARDDOOM_COLORMAP_SIZE, HARDDOOM_PAGE_SIZE),
                                              &dma_addr,
                                              GFP_KERNEL);
     colormaps->ptr_dma = (doom_dma_ptr_t) dma_addr;
@@ -797,7 +792,7 @@ static long doom_frame_draw_lines(struct file *filep, struct doomdev_surf_ioctl_
     return kernel_arg.lines_num;
 }
 
-static long doom_frame_draw_background(struct file *filep, struct doomdev_surf_ioctl_draw_background *arg)
+static long doom_frame_draw_background(struct file *filep, struct doomdev_surf_ioctl_draw_background __user *arg)
 {
     struct file *flat_file;
     struct doomdev_surf_ioctl_draw_background kernel_arg;

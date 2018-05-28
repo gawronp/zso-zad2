@@ -36,32 +36,37 @@ struct doom_device {
     struct pci_dev *pdev;
     struct device *dev;
     int minor;
-    struct mutex device_lock;
-
-    wait_queue_head_t pong_async_wait;
-
-    spinlock_t tasklet_spinlock;
-    struct tasklet_struct tasklet_ping_async;
-
-    doom_command_t *buffer;
-    doom_dma_ptr_t dma_buffer;
-    int doom_buffer_pos_write;
-    spinlock_t buffer_spinlock;
-
     void __iomem *bar0;
 
-    uint64_t fence_last;
+    // device-wide lock, used to prevent race conditions
+    struct mutex device_lock;
+
+    // Following are used to wait for and notify about ping aysnc events.
+    struct tasklet_struct tasklet_ping_async;
+    wait_queue_head_t pong_async_wait;
+    int commands_sent_since_last_ping_async;
+
+    // Following are used to synchronize on fences - much faster than ping sync.
+    struct tasklet_struct tasklet_fence;
+    wait_queue_head_t fence_waitqueue;
     atomic64_t op_counter;
     spinlock_t fence_spinlock;
-    wait_queue_head_t fence_waitqueue;
-    struct tasklet_struct tasklet_fence;
 
+    // Doom device commands buffer.
+    doom_command_t *buffer;
+    doom_dma_ptr_t dma_buffer;
+    int commands_space_left;
+    int doom_buffer_pos_write;
+
+    // Driver internal commands buffer, used to batch commands for performance.
     doom_command_t batch_buffer[BATCH_SIZE];
     int batch_size;
 
-    int commands_sent_since_last_ping_async;
-    int commands_space_left;
-
+    /*
+     * kept to optimize *_PT operations for frames, since they may rarely change
+     * destination / source frame, let's not force device to reload
+     * its caches / TLBs all the time
+     */
     doom_dma_ptr_t last_dst_frame;
     doom_dma_ptr_t last_src_frame;
 };

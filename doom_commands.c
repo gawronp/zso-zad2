@@ -44,13 +44,10 @@ static int get_free_buff_size(struct doom_context *context)
  */
 void flush_batch(struct doom_context *context)
 {
-//    unsigned long flags;
     doom_command_t to_enable;
     int i;
 
-//    spin_lock_irqsave(&context->dev->buffer_spinlock, flags);
     if (context->dev->batch_size == 0) {
-//        spin_unlock_irqrestore(&context->dev->buffer_spinlock, flags);
         return;
     }
 
@@ -64,14 +61,10 @@ void flush_batch(struct doom_context *context)
     if (context->dev->commands_space_left <= DOOM_BUFFER_CRIT_LOW_SIZE) {
 
         context->dev->commands_space_left = get_free_buff_size(context);
-//        spin_lock_bh(&context->dev->tasklet_spinlock);
 
         if (context->dev->commands_space_left <= DOOM_BUFFER_CRIT_LOW_SIZE) {
-            // TODO
             iowrite32(HARDDOOM_INTR_PONG_ASYNC, context->dev->bar0 + HARDDOOM_INTR);
-
             iowrite32(HARDDOOM_INTR_PONG_ASYNC, context->dev->bar0 + HARDDOOM_INTR_ENABLE);
-//            spin_unlock_bh(&context->dev->tasklet_spinlock);
 
             while(get_free_buff_size(context) < DOOM_ASYNC_FREQ) {
                 wait_event_interruptible(context->dev->pong_async_wait,
@@ -79,8 +72,6 @@ void flush_batch(struct doom_context *context)
             }
 
             context->dev->commands_space_left = get_free_buff_size(context);
-        } else {
-//            spin_unlock_bh(&context->dev->tasklet_spinlock);
         }
     }
 
@@ -110,8 +101,6 @@ void flush_batch(struct doom_context *context)
     context->dev->batch_size = 0;
     iowrite32(context->dev->dma_buffer + sizeof(doom_command_t) * context->dev->doom_buffer_pos_write,
               context->dev->bar0 + HARDDOOM_CMD_WRITE_PTR);
-
-//    spin_unlock_irqrestore(&context->dev->buffer_spinlock, flags);
 }
 
 /*
@@ -124,17 +113,10 @@ void flush_batch(struct doom_context *context)
  */
 void send_command(struct doom_context *context, doom_command_t comm)
 {
-//    unsigned long flags;
-
-//    spin_lock_irqsave(&context->dev->buffer_spinlock, flags);
     context->dev->batch_buffer[context->dev->batch_size] = comm;
     context->dev->batch_size += 1;
 
-//    spin_lock_irqsave(&context->dev->buffer_spinlock, flags);
     if (unlikely(context->dev->batch_size == BATCH_SIZE)) {
-//        spin_unlock_irqrestore(&context->dev->buffer_spinlock, flags);
         flush_batch(context);
-    } /*else {
-//        spin_unlock_irqrestore(&context->dev->buffer_spinlock, flags);
-    }*/
+    }
 }

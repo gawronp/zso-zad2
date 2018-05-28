@@ -125,7 +125,6 @@ static int init_device_structures(struct doom_device *doomdev)
     mutex_init(&doomdev->device_lock);
 
     init_waitqueue_head(&doomdev->pong_async_wait);
-    doomdev->tasklet_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->tasklet_spinlock);
     doomdev->commands_sent_since_last_ping_async = 0;
 
     doomdev->last_dst_frame = 0;
@@ -146,7 +145,6 @@ static int init_device_structures(struct doom_device *doomdev)
 
 
     doomdev->doom_buffer_pos_write = 0;
-    doomdev->buffer_spinlock = __SPIN_LOCK_UNLOCKED(doomdev->buffer_spinlock);
 
     return 0;
 }
