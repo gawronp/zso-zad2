@@ -45,10 +45,11 @@ static irqreturn_t interrupt_handler(int irq, void *dev);
 static DEFINE_IDR(doom_idr);
 static DEFINE_SPINLOCK(idr_lock);
 
-static struct class doom_class = {
-    .name = DEVNAME,
-    .owner = THIS_MODULE,
-};
+static struct class *doom_class;
+//= {
+//    .name = DEVNAME,
+//    .owner = THIS_MODULE,
+//};
 
 static dev_t doom_major;
 
@@ -161,7 +162,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     unsigned long err;
     struct doom_device *doomdev;
 
-    doomdev = kmalloc(sizeof(struct doom_device), GFP_KERNEL);
+    doomdev = kzalloc(sizeof(struct doom_device), GFP_KERNEL);
     if (unlikely(!doomdev)) {
         pr_err("kmalloc failed!");
         return -ENOMEM;
@@ -232,7 +233,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     }
 
     doomdev->dev = device_create(
-            &doom_class, &pdev->dev, doomdev->cdev.dev, doomdev, "doom%d", doomdev->minor);
+            doom_class, &pdev->dev, doomdev->cdev.dev, doomdev, "doom%d", doomdev->minor);
     if (IS_ERR(doomdev->dev)) {
         err = PTR_ERR(doomdev->dev);
         pr_err("device_create failed with %lu\n", err);
@@ -313,7 +314,7 @@ static void doom_remove(struct pci_dev *pdev)
 
     BUG_ON(!dev);
 
-    device_destroy(&doom_class, doom_major + dev->minor);
+    device_destroy(doom_class, doom_major + dev->minor);
     cdev_del(&dev->cdev);
     kobject_del(&dev->kobj);
 
@@ -403,28 +404,33 @@ static int doom_init(void)
 {
     long err;
 
-    err = class_register(&doom_class);
-    if (IS_ERR_VALUE(err)) {
-        pr_err("class_register failed with %ld\n", err);
-        return err;
+//    err = class_register(&doom_class);
+//    if (IS_ERR_VALUE(err)) {
+//        pr_err("class_register failed with %ld\n", err);
+//        return err;
+//    }
+    doom_class = class_create(THIS_MODULE, DEVNAME);
+    if (IS_ERR(doom_class)) {
+        return PTR_ERR(doom_class);
     }
 
     err = alloc_chrdev_region(&doom_major, 0, DOOM_MAX_DEV_COUNT, DEVNAME);
     if (IS_ERR_VALUE(err)) {
         pr_err("alloc_chdev_region failed with %ld\n", err);
-        goto err_alloc_region;
+        goto err_class_create;
     }
 
     err = pci_register_driver(&this_driver);
     if (IS_ERR_VALUE(err)) {
         pr_err("pci_register_driver failed with %ld\n", err);
-        goto err_pci_driver_register;
+        goto err_alloc_chrdev_region;
     }
 
-err_pci_driver_register:
+err_alloc_chrdev_region:
     unregister_chrdev_region(doom_major, DOOM_MAX_DEV_COUNT);
-err_alloc_region:
-    class_unregister(&doom_class);
+err_class_create:
+//    class_unregister(&doom_class);
+    class_destroy(doom_class);
     return err;
 }
 
@@ -433,7 +439,8 @@ static void doom_cleanup(void)
     pci_unregister_driver(&this_driver);
     idr_destroy(&doom_idr);
     unregister_chrdev_region(doom_major, DOOM_MAX_DEV_COUNT);
-    class_unregister(&doom_class);
+//    class_unregister(&doom_class);
+    class_destroy(doom_class);
 }
 
 module_init(doom_init);
