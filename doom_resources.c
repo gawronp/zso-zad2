@@ -17,12 +17,12 @@ static int doom_col_texture_release(struct inode *ino, struct file *filep);
 static int doom_flat_texture_release(struct inode *ino, struct file *filep);
 static int doom_colormaps_release(struct inode *ino, struct file *filep);
 
-static long doom_frame_copy_rects(struct file *filep, struct doomdev_surf_ioctl_copy_rects __user *arg);
-static long doom_frame_fill_rects(struct file *filep, struct doomdev_surf_ioctl_fill_rects __user *arg);
-static long doom_frame_draw_lines(struct file *filep, struct doomdev_surf_ioctl_draw_lines __user *arg);
-static long doom_frame_draw_background(struct file *filep, struct doomdev_surf_ioctl_draw_background __user *arg);
-static long doom_frame_draw_columns(struct file *filep, struct doomdev_surf_ioctl_draw_columns __user *arg);
-static long doom_frame_draw_spans(struct file *filep, struct doomdev_surf_ioctl_draw_spans __user *arg);
+static long doom_frame_copy_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_copy_rects __user *arg);
+static long doom_frame_fill_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_fill_rects __user *arg);
+static long doom_frame_draw_lines(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_lines __user *arg);
+static long doom_frame_draw_background(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_background __user *arg);
+static long doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_columns __user *arg);
+static long doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_spans __user *arg);
 
 static struct file_operations doom_frame_fops = {
         .owner = THIS_MODULE,
@@ -520,19 +520,24 @@ err_kmalloc_colormaps:
 
 static long doom_frame_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+    if (unlikely(file->f_op != &doom_frame_fops)) {
+        pr_err("frame ioctl operation was run on incorrect file!\n");
+        return -EINVAL;
+    }
+
     switch (cmd) {
     case DOOMDEV_SURF_IOCTL_COPY_RECTS:
-        return doom_frame_copy_rects(file, (struct doomdev_surf_ioctl_copy_rects *) arg);
+        return doom_frame_copy_rects(file->private_data, (struct doomdev_surf_ioctl_copy_rects *) arg);
     case DOOMDEV_SURF_IOCTL_FILL_RECTS:
-        return doom_frame_fill_rects(file, (struct doomdev_surf_ioctl_fill_rects *) arg);
+        return doom_frame_fill_rects(file->private_data, (struct doomdev_surf_ioctl_fill_rects *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_LINES:
-        return doom_frame_draw_lines(file, (struct doomdev_surf_ioctl_draw_lines *) arg);
+        return doom_frame_draw_lines(file->private_data, (struct doomdev_surf_ioctl_draw_lines *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_BACKGROUND:
-        return doom_frame_draw_background(file, (struct doomdev_surf_ioctl_draw_background *) arg);
+        return doom_frame_draw_background(file->private_data, (struct doomdev_surf_ioctl_draw_background *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_COLUMNS:
-        return doom_frame_draw_columns(file, (struct doomdev_surf_ioctl_draw_columns *) arg);
+        return doom_frame_draw_columns(file->private_data, (struct doomdev_surf_ioctl_draw_columns *) arg);
     case DOOMDEV_SURF_IOCTL_DRAW_SPANS:
-        return doom_frame_draw_spans(file, (struct doomdev_surf_ioctl_draw_spans *) arg);
+        return doom_frame_draw_spans(file->private_data, (struct doomdev_surf_ioctl_draw_spans *) arg);
     default:
         pr_err("ioctl on frame file called with incorrect command\n");
         return -EINVAL;
@@ -678,22 +683,15 @@ static int doom_colormaps_release(struct inode *ino, struct file *filep)
     return 0;
 }
 
-static long doom_frame_copy_rects(struct file *filep, struct doomdev_surf_ioctl_copy_rects *arg)
+static long doom_frame_copy_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_copy_rects *arg)
 {
     long err;
     uint16_t i;
-    struct doom_frame *frame;
     struct file *src_file;
     struct doomdev_surf_ioctl_copy_rects kernel_arg;
     struct doom_frame *src_frame;
     struct doomdev_copy_rect *rects_to_copy;
     int fence_num;
-
-    if (unlikely(filep->f_op != &doom_frame_fops)) {
-        pr_err("copy rects operation was run on incorrect file descriptor\n");
-        return -EINVAL;
-    }
-    frame = filep->private_data;
 
     if (unlikely(copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_copy_rects)))) {
         pr_err("copy_from_user failed when copying argument of type doomdev_surf_ioctl_copy_rects from user\n");
@@ -792,20 +790,13 @@ err_copy_rects_put_src_file:
     return err;
 }
 
-static long doom_frame_fill_rects(struct file *filep, struct doomdev_surf_ioctl_fill_rects *arg)
+static long doom_frame_fill_rects(struct doom_frame *frame, struct doomdev_surf_ioctl_fill_rects *arg)
 {
     long err;
     uint16_t i;
     struct doomdev_surf_ioctl_fill_rects kernel_arg;
     struct doomdev_fill_rect *rects_to_fill;
     int fence_num;
-    struct doom_frame *frame;
-
-    if (unlikely(filep->f_op != &doom_frame_fops)) {
-        pr_err("fill rects operation was run on incorrect file descriptor\n");
-        return -EINVAL;
-    }
-    frame = filep->private_data;
 
     if (unlikely(copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_fill_rects)))) {
         pr_err("copy_from_user failed when copying argument of type doomdev_surf_ioctl_fill_rects from user\n");
@@ -870,20 +861,13 @@ err_fill_rects_kmalloc_rects_to_fill:
     return err;
 }
 
-static long doom_frame_draw_lines(struct file *filep, struct doomdev_surf_ioctl_draw_lines *arg)
+static long doom_frame_draw_lines(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_lines *arg)
 {
     long err;
     uint16_t i;
     struct doomdev_surf_ioctl_draw_lines kernel_arg;
     struct doomdev_line *lines_to_draw;
     int fence_num;
-    struct doom_frame *frame;
-
-    if (unlikely(filep->f_op != &doom_frame_fops)) {
-        pr_err("draw lines operation was run on incorrect file descriptor\n");
-        return -EINVAL;
-    }
-    frame = filep->private_data;
 
     if (unlikely(copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_draw_lines)))) {
         pr_err("copy_from_user failed when copying argument of type doomdev_surf_ioctl_draw_lines from user\n");
@@ -953,20 +937,13 @@ err_draw_lines_kmalloc_lines_to_draw:
     return err;
 }
 
-static long doom_frame_draw_background(struct file *filep, struct doomdev_surf_ioctl_draw_background *arg)
+static long doom_frame_draw_background(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_background *arg)
 {
     long err;
     struct file *flat_file;
     struct doomdev_surf_ioctl_draw_background kernel_arg;
     struct doom_flat_texture *texture;
     int fence_num;
-    struct doom_frame *frame;
-
-    if (unlikely(filep->f_op != &doom_frame_fops)) {
-        pr_err("draw background operation was run on incorrect file descriptor\n");
-        return -EINVAL;
-    }
-    frame = filep->private_data;
 
     if (unlikely(copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_draw_background)))) {
         pr_err("copy_from_user failed when copying argument of type doomdev_surf_ioctl_draw_background from user\n");
@@ -1014,7 +991,7 @@ err_draw_bcg_put_flat_file:
     return err;
 }
 
-static long doom_frame_draw_columns(struct file *filep, struct doomdev_surf_ioctl_draw_columns *arg)
+static long doom_frame_draw_columns(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_columns *arg)
 {
     long err;
     uint16_t i;
@@ -1023,17 +1000,10 @@ static long doom_frame_draw_columns(struct file *filep, struct doomdev_surf_ioct
     struct file *texture_file = NULL;
     struct file *colormap_file = NULL;
     struct file *color_translate_file = NULL;
-    struct doom_frame *frame;
     struct doom_col_texture *texture = NULL;
     struct doom_colormaps *colormaps_color = NULL;
     struct doom_colormaps *colormaps_transl = NULL;
     int fence_num;
-
-    if (unlikely(filep->f_op != &doom_frame_fops)) {
-        pr_err("draw columns operation was run on incorrect file descriptor\n");
-        return -EINVAL;
-    }
-    frame = filep->private_data;
 
     if (copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_draw_columns))) {
         pr_err("copy_from_user failed when copying argument of type doomdev_surf_ioctl_draw_columns from user\n");
@@ -1176,7 +1146,7 @@ err_draw_columns_kmalloc_columns_to_draw:
     return err;
 }
 
-static long doom_frame_draw_spans(struct file *filep, struct doomdev_surf_ioctl_draw_spans *arg)
+static long doom_frame_draw_spans(struct doom_frame *frame, struct doomdev_surf_ioctl_draw_spans *arg)
 {
     long err;
     uint16_t i;
@@ -1185,17 +1155,10 @@ static long doom_frame_draw_spans(struct file *filep, struct doomdev_surf_ioctl_
     struct file *flat_texture_file = NULL;
     struct file *colormap_file = NULL;
     struct file *translate_file = NULL;
-    struct doom_frame *frame;
     struct doom_flat_texture *texture = NULL;
     struct doom_colormaps *colormaps_color = NULL;
     struct doom_colormaps *colormaps_transl;
     int fence_num;
-
-    if (unlikely(filep->f_op != &doom_frame_fops)) {
-        pr_err("draw spans operation was run on incorrect file descriptor\n");
-        return -EINVAL;
-    }
-    frame = filep->private_data;
 
     if (unlikely(copy_from_user(&kernel_arg, arg, sizeof(struct doomdev_surf_ioctl_draw_spans)))) {
         pr_err("copy_from_user failed when copying argument of type doomdev_surf_ioctl_draw_spans from user\n");

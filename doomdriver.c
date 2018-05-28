@@ -230,7 +230,7 @@ static int doom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
     run_init_doom_device_codes(doomdev);
 
-    printk(KERN_INFO "doom device probed sucessfully!\n");
+    pr_info("device doom%d probed sucessfully!\n", doomdev->minor);
 
     return 0;
 
@@ -328,7 +328,13 @@ static void doom_remove(struct pci_dev *pdev)
 
 static long doom_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    struct doom_context *context = file->private_data;
+    struct doom_context *context;
+
+    if (unlikely(file->f_op != &doom_fops)) {
+        pr_err("doom ioctl operation was run on incorrect file/device!\n");
+        return -EINVAL;
+    }
+    context = file->private_data;
 
     switch (cmd) {
     case DOOMDEV_IOCTL_CREATE_SURFACE:
