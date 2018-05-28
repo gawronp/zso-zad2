@@ -46,11 +46,6 @@ static DEFINE_IDR(doom_idr);
 static DEFINE_SPINLOCK(idr_lock);
 
 static struct class *doom_class;
-//= {
-//    .name = DEVNAME,
-//    .owner = THIS_MODULE,
-//};
-
 static dev_t doom_major;
 
 static long doom_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -314,7 +309,7 @@ static void doom_remove(struct pci_dev *pdev)
 
     BUG_ON(!dev);
 
-    device_destroy(doom_class, doom_major + dev->minor);
+    device_destroy(doom_class, dev->cdev.dev);
     cdev_del(&dev->cdev);
     kobject_del(&dev->kobj);
 
@@ -404,11 +399,6 @@ static int doom_init(void)
 {
     long err;
 
-//    err = class_register(&doom_class);
-//    if (IS_ERR_VALUE(err)) {
-//        pr_err("class_register failed with %ld\n", err);
-//        return err;
-//    }
     doom_class = class_create(THIS_MODULE, DEVNAME);
     if (IS_ERR(doom_class)) {
         return PTR_ERR(doom_class);
