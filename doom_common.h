@@ -31,26 +31,17 @@
 typedef uint32_t doom_dma_ptr_t;
 typedef uint32_t doom_command_t;
 
-static DEFINE_IDR(global_fence);
-static DEFINE_SPINLOCK(global_fence_spinlock);
-
 struct doom_device {
     struct cdev cdev;
     struct pci_dev *pdev;
     struct device *dev;
     int minor;
-//    struct dma_pool *dma_pool;
-    struct mutex surface_lock;
-    wait_queue_head_t read_sync_wait;
-    spinlock_t read_flag_spinlock;
-    int read_flag;
-    spinlock_t mmio_lock;
-    int fifo_ping_remaining;
+    struct mutex device_lock;
+
     wait_queue_head_t pong_async_wait;
 
     spinlock_t tasklet_spinlock;
     struct tasklet_struct tasklet_ping_async;
-    struct completion *ping_async_event;
 
     doom_command_t *buffer;
     doom_dma_ptr_t dma_buffer;
@@ -68,9 +59,6 @@ struct doom_device {
     doom_command_t batch_buffer[BATCH_SIZE];
     int batch_size;
 
-//    atomic_t commands_sent_since_last_ping_async;
-//    atomic_t commands_space_left;
-
     int commands_sent_since_last_ping_async;
     int commands_space_left;
 
@@ -87,58 +75,51 @@ struct doom_frame {
 
     uint16_t width;
     uint16_t height;
-    void **pt_virt;
-    doom_dma_ptr_t *pt_dma;
-    doom_dma_ptr_t pt_dma_addr;
-//    doom_ptr_t *pages_dma;
-    int pages_count;
-    size_t page_table_size;
 
-//    rwlock_t frame_rw_lock;
-    int last_fence;
-    spinlock_t last_fence_spinlock;
+    void **pt_virt; // virtual pointer to page table of virtual addresses
+    doom_dma_ptr_t *pt_dma; // virtual pointer to page table of dma addresses
+    doom_dma_ptr_t pt_dma_addr; // dma pointer to page table of dma addresses
+    int pages_count;
+    size_t page_table_size; // in bytes, should be aligned to 64 B
+
+    int last_fence; // numer of last fence that frame was used before
 };
 
 struct doom_col_texture {
     struct doom_context *context;
 
     uint16_t height;
+    size_t texture_size;
 
-    int is_page_table_on_last_page;
-
-    void **pt_virt;
-    doom_dma_ptr_t *pt_dma;
-    doom_dma_ptr_t pt_dma_addr;
-
+    size_t rounded_texture_size; // rounded to 256 B, requirement of device
     int pages_count;
     size_t page_table_size;
-    size_t texture_size;
-    size_t rounded_texture_size;
+    int is_page_table_on_last_page; // 1 if page table is placed right after last byte on last page, 0 if on another page
+    doom_dma_ptr_t *pt_dma;
+    doom_dma_ptr_t pt_dma_addr;
+    void **pt_virt;
 
     int last_fence;
-    spinlock_t last_fence_spinlock;
 };
 
 struct doom_flat_texture {
     struct doom_context *context;
 
-    void *ptr_virt;
-    doom_dma_ptr_t ptr_dma;
+    void *ptr_virt; // virtual pointer to texture
+    doom_dma_ptr_t ptr_dma; // dma pointer to texture
 
     int last_fence;
-    spinlock_t last_fence_spinlock;
 };
 
 struct doom_colormaps {
     struct doom_context *context;
 
-    void *ptr_virt;
-    doom_dma_ptr_t ptr_dma;
-
     int count;
 
+    void *ptr_virt; // virtual pointer to colormaps
+    doom_dma_ptr_t ptr_dma; // dma pointer to colormaps
+
     int last_fence;
-    spinlock_t last_fence_spinlock;
 };
 
 #endif
