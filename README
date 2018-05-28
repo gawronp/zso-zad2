@@ -1,0 +1,46 @@
+Piotr Gawryluk, 346895
+Drugie zadanie zaliczeniowe z ZSO, 2017/2018
+-------------------------------------------------------------------------------
+
+Rozwiązanie używa bloku wczytywania poleceń i korzysta z synchronizacji przez
+FENCE zamiast PING_SYNC.
+
+Sterownik alokuje dla każdego urządzenia bufor poleceń, dodatkowo sterownik
+dla każdego urządzenie posiada mniejszy bufor poleceń, skąd przepisywane są one
+do "prawdziwego" bufora urządzenia gdy mniejszy bufor się zapełni lub skończone
+zostanie przetwarzanie jednego polecenia rysowania. Takie rozwiązanie zmniejsza
+średnią liczbę operacji wykonywanych dla jednego polecenia dodawanego do bufora
+urządzenia.
+
+Każda operacja rysowania zwiększa 64 bitowy licznik operacji urządzenia
+i umieszcza w buforze poleceń instrukcję FENCE z numerem operacji % limit fence.
+Ten numer fence jest również umieszczany w strukturach odpowiadających zasobom
+używanym w danej operacji (w ten sposób operacje release dla zasobów i operacja
+read dla ramek mają dostęp do numeru FENCE na jaki mają oczekiwać). 
+
+Oczekiwanie na FENCE jak i na PONG ASYNC (używany przy oczekiwaniu na wolne
+miejsce w buforze jak opisano w treści zadania, instrukcja PING_ASYNC wysyłana
+jest z częstotliwością ~1/16 bufora, bufor jest całkiem sporych rozmiarów)
+odbywa się poprzez czekanie na odpowiednich kolejkach (waitqueues) aż do czasu
+gdy przyjdzie przerwanie, przerwanie planuje (schedule) wykonanie odpowiedniego
+taskletu (osobny do budzenia procesów oczekujących na PONG_ASYNC i na FENCE).
+
+Alokacja pamięci dla tekstur kolumnowych odbywa się na 2 sposoby: jeżeli jest
+możliwe aby tablica stron została umieszczona na ostatniej stronie pamięci
+tekstury (za jej pamięcią wyrównaną do wielokrotności 256 bajtów), to tam
+jest umieszczana, wpp. na tablicę stron tekstury kolumnowej zostaje użyta osobna
+strona.
+
+Ponieważ operacje *_PT są kosztowne, urządzenie pamięta wskaźniki na ostatnią
+ramkę źródłową i docelową (szczególnie dlatego, że wiele operacji pod rząd może
+używać tej samej ramki) a operacje rysowania sprawdzają czy ustawianie nowego
+wskaźnika ramek jest konieczne.
+
+Sterownik używa kobjects do zliczania liczby referencji dla pliku urządzenia oraz
+semafora do oczekiwania aż wszystkie referencje zostaną zwrócone.
+
+Wszelka synchronizacja operacji (dodawania instrukcji do małego bufora urządzenia
+czy kopiowanie instrukcji z małego bufora do "prawdziwego" bufora urządzenia,
+ustawianie numeru FENCE dla struktur opisujących zasoby, oczekiwanie na przerwanie
+PONG ASYNC / FENCE, itd...) na urządzeniu odbywa się poprzez główną blokadę
+urządzenia (device_lock).
